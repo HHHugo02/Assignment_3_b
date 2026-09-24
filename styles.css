@@ -1,0 +1,36 @@
+.reveal .lesson {
+  border-left: 6px solid #2c7fb8;
+  background: #eef5fb;
+  padding: 0.4em 0.8em;
+  margin-top: 0.6em;
+  font-size: 0.9em;
+}
+
+.reveal .lesson::before {
+  content: "What I learned: ";
+  font-weight: bold;
+  color: #2c7fb8;
+}
+
+.reveal .problem {
+  border-left: 6px solid #d95f02;
+  background: #fdf1e8;
+  padding: 0.4em 0.8em;
+  margin-top: 0.6em;
+  font-size: 0.9em;
+}
+
+.reveal .problem::before {
+  content: "Problem: ";
+  font-weight: bold;
+  color: #d95f02;
+}
+
+.reveal table {
+  font-size: 0.75em;
+}
+
+.reveal .small-code pre code {
+  font-size: 0.72em;
+  line-height: 1.25;
+}
