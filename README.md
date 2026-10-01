@@ -3,20 +3,24 @@
 Presentation: `presentation.html` (open in a browser; press `S` for speaker notes,
 `F` for full screen). Source: `presentation.qmd`.
 
+The presentation is built up step by step:
+
+1. A simple implementation (density scale, `dt()`)
+2. Is it correct? (theory, `numDeriv`, simulation, `optim()`, `teigen`, `mclust`)
+3. Where is it slow? (`Rprof`, line profiling, call counts)
+
+The first version of the whole project (log scale, Rcpp, Fisher information,
+robustness study, ...) is kept in `old/`.
+
 ## Files
 
 | File | Content |
 |------|---------|
-| `R/tmix-model.R` | t log-density, mixture density, simulation, log-likelihood, E-step, `Q()`, `grad_Q()`, `Q_aug()` |
-| `R/em-algorithms.R` | generic driver `em()`, convergence criteria, GEM step, augmented EM (readable + optimized), exact EM, Gaussian mixture EM |
-| `R/direct-methods.R` | gradient ascent and BFGS on the marginal log-likelihood |
-| `R/tracer.R` | small tracer (records parameters and time, like `CSwR::tracer()`) |
-| `R/fisher.R` | Fisher information three ways + spectral radius |
-| `R/tmix-class.R` | S3 class `tmix` with `print`, `plot`, `coef`, `logLik`, `vcov`, `predict` |
-| `R/v1-naive.R` | the first versions (kept to show the development) |
+| `R/tmix-simple.R` | t-density, mixture density, simulation, log-likelihood, E-step, `Q()`, `grad_Q()` |
+| `R/gem.R` | the GEM step (`create_gem_step()`), the EM driver `em()` and `gem()` |
+| `R/profiling-tools.R` | `count_calls()`, `profile_expr()`, `profile_lines()` |
 | `R/profiling-demo.R` | interactive `profvis` demo for the exam |
-| `src/em_aug_step.cpp` | Rcpp version of the augmented EM step |
-| `tests/test-tmix.R` | testthat tests |
+| `tests/test-simple.R` | testthat tests |
 
 ## Run
 
@@ -24,16 +28,16 @@ From this folder in R:
 
 ```r
 source("R/load.R")
-testthat::test_file("tests/test-tmix.R")
-fit <- tmix(x = rtmix(400, c(0.6, 0, 3, 1, 0.7), c(5, 10)), nu = c(5, 10))
-fit; plot(fit)
+testthat::test_file("tests/test-simple.R")
+x <- rtmix(400, c(0.6, 0, 3, 1, 0.7), c(5, 10))
+gem(x, c(5, 10))
 ```
 
-Rebuild the slides (takes about 1-2 minutes):
+Rebuild the slides:
 
 ```
 quarto render presentation.qmd
 ```
 
-Required packages: ggplot2, patchwork, testthat, numDeriv, bench, profvis, Rcpp
-(+ Rtools for Rcpp).
+Required packages: ggplot2, patchwork, testthat, numDeriv, bench, profvis,
+teigen, mclust.

@@ -1,0 +1,856 @@
+---
+title: "EM for Mixtures of t-Distributions"
+subtitle: "Computational Statistics — Assignment 3, topic B"
+format:
+  revealjs:
+    theme: default
+    css: styles.css
+    slide-number: true
+    smaller: true
+    scrollable: true
+    code-overflow: wrap
+    highlight-style: github
+    embed-resources: true
+    width: 1200
+    height: 750
+execute:
+  echo: true
+  warning: false
+  message: false
+knitr:
+  opts_chunk:
+    fig.width: 10
+    fig.height: 4.6
+    fig.align: center
+    comment: "#>"
+---
+
+```{r}
+#| label: setup
+#| include: false
+
+library(ggplot2)
+library(patchwork)
+library(testthat)
+source("R/load.R")
+theme_set(theme_minimal(base_size = 15))
+options(digits = 5, width = 110)
+
+# print the source of a function (with comments) in a code chunk
+show_fun <- function(name) {
+  paste0(name, " <- ", paste(as.character(attr(get(name), "srcref")), collapse = "\n"))
+}
+method_cols <- c(
+  em_aug = "#1b9e77", em_exact = "#7570b3", gem = "#d95f02",
+  gem_cold = "#e6ab02", gd = "#e7298a", bfgs = "#666666"
+)
+```
+
+## Roadmap
+
+1. **The model** and deriving the EM algorithm
+2. **Version 1 → version 2**: a generalized EM that actually *is* one
+3. **Testing**: how do I know it is correct?
+4. **Alternatives**: augmented EM, exact EM, gradient ascent, BFGS
+5. **Code structure**: one driver, many step functions, an S3 class
+6. **Convergence criteria and benchmarking** (`bench::mark`, `bench::press`)
+7. **Profiling** (`Rprof`/`profvis`) and optimization (R → Rcpp)
+8. **Theory check**: Fisher information and convergence rates
+9. **Robustness**: starting values, many data sets, outliers
+
+Throughout: [boxes like this one]{.lesson} mark what I learned along the way.
+
+::: notes
+The presentation follows the order in which I actually worked on the problem.
+Each "What I learned" box is a point where a test, a benchmark or a profile
+changed my implementation.
+:::
+
+# The model
+
+## Two-component mixture of $t$-distributions
+
+$$
+f(x \mid \theta) = p\, f(x \mid \mu_1, \sigma_1^2, \nu_1) + (1 - p)\, f(x \mid \mu_2, \sigma_2^2, \nu_2),
+\qquad \theta = (p, \mu_1, \mu_2, \sigma_1, \sigma_2)
+$$
+
+with $f(x \mid \mu, \sigma^2, \nu) = \frac{\Gamma((\nu+1)/2)}{\sqrt{\pi\nu\sigma^2}\,\Gamma(\nu/2)}\left(1 + \frac{(x-\mu)^2}{\nu\sigma^2}\right)^{-(\nu+1)/2}$ and $\nu_1, \nu_2$ fixed.
+
+:::: {.columns}
+::: {.column width="45%"}
+Simulated data as in the assignment:
+
+```{r}
+#| label: sim-data
+set.seed(42)
+nu <- c(5, 10)
+par_true <- c(p = 0.6, mu1 = 0, mu2 = 3,
+              sigma1 = 1, sigma2 = 0.7)
+x <- rtmix(400, par_true, nu)
+par0 <- default_start(x)
+round(par0, 3)
+```
+
+`default_start()`: $p = 0.5$, quartiles for $\mu$, $\text{sd}(x)/2$ for $\sigma$.
+:::
+
+::: {.column width="55%"}
+```{r}
+#| label: fig-data
+#| echo: false
+#| fig-width: 6.5
+#| fig-height: 4.3
+grid <- seq(min(x), max(x), length.out = 400)
+ggplot(data.frame(x), aes(x)) +
+  geom_histogram(aes(y = after_stat(density)), bins = 40, fill = "grey85", colour = "white") +
+  geom_line(data = data.frame(x = grid, d = dtmix(grid, par_true, nu)), aes(x, d), linewidth = 1) +
+  labs(y = "density", title = "N = 400, true density")
+```
+:::
+::::
+
+## Missing data: the component labels
+
+**Idea:** if we knew which component each $x_i$ came from, estimation would be easy — just like the two coins in lecture 9.
+
+Introduce the (unobserved) label $Z_i \in \{1, 2\}$:
+$$
+P(Z_i = 1) = p, \qquad X_i \mid Z_i = j \sim t(\mu_j, \sigma_j^2, \nu_j).
+$$
+
+Write $f_j(x) = f(x \mid \mu_j, \sigma_j^2, \nu_j)$. The joint density of one complete observation $(x_i, z_i)$ is
+$$
+f(x_i, z_i \mid \theta) = \big(p\, f_1(x_i)\big)^{\mathbf{1}(z_i = 1)} \big((1 - p)\, f_2(x_i)\big)^{\mathbf{1}(z_i = 2)}.
+$$
+
+. . .
+
+**Check:** summing over $z_i \in \{1, 2\}$ gives $p f_1(x_i) + (1-p) f_2(x_i)$ — exactly the mixture density. So $(X, Z)$ is a valid complete-data model for our observed $X$.
+
+**Complete-data log-likelihood** (what we could maximize if $Z$ were observed):
+$$
+\ell_c(\theta) = \sum_{i=1}^N \mathbf{1}(Z_i = 1)\big(\log p + \log f_1(x_i)\big) + \mathbf{1}(Z_i = 2)\big(\log(1-p) + \log f_2(x_i)\big)
+$$
+
+With $Z$ known: $p$ = fraction of labels equal to 1, and $(\mu_j, \sigma_j)$ = a $t$-fit to group $j$ alone. But $Z$ is missing.
+
+::: notes
+The trick of EM is to choose missing data such that the complete-data problem is easy. Here the missing data are the labels. The check that summing out z gives the mixture density is what makes this a legal choice of complete data.
+:::
+
+## E-step: from $\ell_c$ to $Q$
+
+$Q(\theta \mid \theta') = E_{\theta'}\big(\ell_c(\theta) \mid X = x\big)$ — average $\ell_c$ over what the labels could be, given the data and the current guess $\theta'$.
+
+**Step 1 — linearity.** Given $x$, the terms $\log p + \log f_1(x_i)$ are just numbers, so the expectation only hits the indicators:
+$$
+E_{\theta'}\big(\mathbf{1}(Z_i = 1) \mid X = x\big) = P_{\theta'}(Z_i = 1 \mid X_i = x_i) =: \gamma_i
+$$
+(the observations are independent, so only $x_i$ matters for $Z_i$).
+
+**Step 2 — Bayes' formula.**
+$$
+\gamma_i = \frac{P(Z_i = 1)\, f(x_i \mid Z_i = 1)}{f(x_i)} = \frac{p' f_1'(x_i)}{p' f_1'(x_i) + (1 - p') f_2'(x_i)}
+$$
+
+**Result:**
+$$
+Q(\theta \mid \theta') = \sum_{i=1}^N \gamma_i \big(\log p + \log f_1(x_i)\big) + (1 - \gamma_i)\big(\log(1-p) + \log f_2(x_i)\big)
+$$
+
+The $\gamma_i$ are computed from the **old** $\theta'$ and are fixed numbers ("soft labels"); $\theta$ in the logs is the **new** parameter we optimize over.
+
+```{r}
+#| label: fig-gamma
+#| echo: false
+#| fig-height: 2.6
+par_hat0 <- em(par0, create_em_aug_step(x, nu))
+gdf <- rbind(
+  data.frame(x = grid, gamma = e_step(par0, grid, nu), theta = "at the start value"),
+  data.frame(x = grid, gamma = e_step(par_hat0, grid, nu), theta = "at the estimate")
+)
+ggplot(gdf, aes(x, gamma, colour = theta)) +
+  geom_line(linewidth = 1) +
+  geom_rug(data = data.frame(x), aes(x), inherit.aes = FALSE, alpha = 0.3) +
+  labs(y = expression(gamma == P(Z == 1 ~ "|" ~ X == x)), colour = NULL)
+```
+
+Far to the right $\gamma$ rises again: component 1 has heavier tails ($\nu_1 = 5$, larger $\sigma_1$), so an extreme point is better explained by component 1 than by component 2.
+
+## M-step: maximize $Q$ — what can be solved?
+
+$Q$ splits into three parts that can be maximized separately:
+$$
+Q = \underbrace{\sum_i \gamma_i \log p + (1 - \gamma_i)\log(1-p)}_{\text{only } p}
+  + \underbrace{\sum_i \gamma_i \log f_1(x_i)}_{\text{only } \mu_1, \sigma_1}
+  + \underbrace{\sum_i (1 - \gamma_i) \log f_2(x_i)}_{\text{only } \mu_2, \sigma_2}
+$$
+
+**$p$:** $\ \partial_p Q = \frac{\sum_i \gamma_i}{p} - \frac{N - \sum_i \gamma_i}{1 - p} = 0 \;\Rightarrow\; p = \frac{1}{N}\sum_i \gamma_i$ — closed form.
+
+. . .
+
+**$(\mu_1, \sigma_1)$:** a *weighted* $t$ log-likelihood. With $r = x - \mu_1$ and $\log f_1(x) = c(\nu_1) - \log \sigma_1 - \frac{\nu_1 + 1}{2}\log\big(1 + \frac{r^2}{\nu_1 \sigma_1^2}\big)$, the chain rule gives
+$$
+\partial_{\mu_1} \log f_1(x) = \frac{\nu_1 + 1}{2}\cdot\frac{2r / (\nu_1\sigma_1^2)}{1 + r^2/(\nu_1\sigma_1^2)} = \frac{w\, r}{\sigma_1^2},
+\qquad
+\partial_{\sigma_1} \log f_1(x) = -\frac{1}{\sigma_1} + \frac{w\, r^2}{\sigma_1^3},
+\qquad w = \frac{\nu_1 + 1}{\nu_1 + r^2/\sigma_1^2}.
+$$
+
+Summing with weights $\gamma_i$ gives the gradient of $Q$:
+$$
+\partial_{\mu_1} Q = \sum_i \gamma_i \frac{w_{i1} r_{i1}}{\sigma_1^2}, \qquad
+\partial_{\sigma_1} Q = \sum_i \frac{\gamma_i}{\sigma_1}\left(\frac{w_{i1} r_{i1}^2}{\sigma_1^2} - 1\right) \qquad (\text{same for component 2 with } 1 - \gamma_i).
+$$
+
+. . .
+
+Setting $\partial_{\mu_1} Q = 0$ gives $\mu_1 = \frac{\sum_i \gamma_i w_{i1} x_i}{\sum_i \gamma_i w_{i1}}$ — it *looks* like a weighted mean, but $w_{i1}$ depends on $\mu_1$ and $\sigma_1$ themselves. It is a fixed-point equation, not a formula. (For a Gaussian mixture $w_{i1} \equiv 1$ and it *is* a formula.)
+
+[No closed-form M-step for $(\mu, \sigma)$. **Generalized EM:** we only need $Q(\theta_{n+1} \mid \theta_n) \ge Q(\theta_n \mid \theta_n)$, so: exact update of $p$ + one uphill (gradient) step for $(\mu_1, \mu_2, \sigma_1, \sigma_2)$.]{.problem}
+
+## From formulas to code: the E-step
+
+Numerical detail: for an outlier, $f_1(x_i)$ and $f_2(x_i)$ can both be tiny, and $\gamma_i$ is a ratio of two tiny numbers. So everything is computed on **log scale**:
+$$
+a_i = \log p + \log f_1(x_i), \quad b_i = \log(1-p) + \log f_2(x_i), \quad
+\gamma_i = \frac{e^{a_i}}{e^{a_i} + e^{b_i}} = \frac{1}{1 + e^{b_i - a_i}} = \texttt{plogis}(a_i - b_i)
+$$
+and $\ell(\theta) = \sum_i \log(e^{a_i} + e^{b_i})$ with the log-sum-exp trick.
+
+::: {.small-code}
+```{r}
+#| eval: false
+#| code: !expr c(show_fun("ldt_ls"), "", show_fun("log_comp"), "", show_fun("e_step"), "", show_fun("loglik"))
+```
+:::
+
+## From formulas to code: $Q$ and its gradient
+
+| Math | Code |
+|------|------|
+| $\gamma_i$ (from old $\theta'$) | `gam = e_step(par0, x, nu)` — can be passed in, so the E-step is done *once* per iteration even if $Q$ is evaluated many times in the line search |
+| $\log p + \log f_1(x_i)$ | `log(par[1]) + ldt_ls(x, par[2], par[4], nu[1])` |
+| $r_{i1}$, $w_{i1}$ | `r1 <- x - par[2]`, `w1 <- (nu[1] + 1) / (nu[1] + r1^2 / s1^2)` |
+| $\partial_{\mu_1} Q = \sum_i \gamma_i w_{i1} r_{i1} / \sigma_1^2$ | `sum(gam * w1 * r1) / s1^2` |
+
+::: {.small-code}
+```{r}
+#| eval: false
+#| code: !expr c(show_fun("Q"), "", show_fun("grad_Q"))
+```
+:::
+
+## Checking the derivation numerically
+
+Before building algorithms on top, check each formula against something independent:
+
+```{r}
+#| label: check-derivation
+par_test <- c(0.4, -0.5, 2.5, 1.3, 0.9)
+
+# E-step on log scale vs. the textbook formula with dt()
+f1 <- par0[1] * dt((x - par0[2]) / par0[4], nu[1]) / par0[4]
+f2 <- (1 - par0[1]) * dt((x - par0[3]) / par0[5], nu[2]) / par0[5]
+all.equal(e_step(par0, x, nu), f1 / (f1 + f2))
+
+# analytic gradient of Q vs. numerical differentiation
+g <- rbind(analytic  = grad_Q(par_test, par0, x, nu),
+           numerical = numDeriv::grad(function(p) Q(p, par0, x, nu), par_test))
+colnames(g) <- par_names
+g
+
+# Fisher's identity: grad_Q(theta | theta) is the gradient of the log-likelihood
+g <- rbind(fisher_identity = grad_loglik(par_test, x, nu),
+           numerical       = numDeriv::grad(function(p) loglik(p, x, nu), par_test))
+colnames(g) <- par_names
+g
+```
+
+[Deriving by hand and checking against `numDeriv` catches sign and chain-rule errors before they turn into a mysteriously slow or wrong algorithm.]{.lesson}
+
+# Version 1 → version 2
+
+## GEM, version 1: one gradient step with a fixed step size
+
+```{r}
+#| eval: false
+#| code: !expr show_fun("create_gem_step_v1")
+```
+
+```{r}
+#| label: fig-v1
+#| echo: false
+#| fig-height: 3.6
+v1_traces <- do.call(rbind, lapply(c(1e-2, 1e-3, 1e-4), function(g) {
+  tr <- trace_run(function(cb) em(par0, create_gem_step_v1(x, nu, g), maxit = 150, cb = cb), x, nu, "")
+  data.frame(n = tr$n, loglik = tr$loglik, gamma = format(g))
+}))
+ggplot(v1_traces, aes(n, loglik, colour = gamma)) +
+  geom_line(linewidth = 0.9) +
+  coord_cartesian(ylim = c(-800, -783)) +
+  labs(x = "iteration", y = expression(l(theta[n])), colour = "step size")
+```
+
+[With step size 0.01 the log-likelihood **decreases** in many iterations — the step does not increase $Q$, so it is not a GEM algorithm. With $10^{-4}$ it crawls. The right step size depends on $N$ and $\sigma^2$ (the gradient scales like $N/\sigma^2$).]{.problem}
+
+## GEM, version 2: backtracking line search on $Q$
+
+A GEM step only has to satisfy $Q(\theta_{n+1} \mid \theta_n) \ge Q(\theta_n \mid \theta_n)$. Enforce it with an Armijo condition:
+
+::: {.small-code}
+```{r}
+#| eval: false
+#| code: !expr show_fun("create_gem_step")
+```
+:::
+
+[A GEM needs a *guaranteed* increase of $Q$ — that is exactly what backtracking gives. Then the ascent property $\ell(\theta_{n+1}) \ge \ell(\theta_n)$ follows from the EM theory.]{.lesson}
+
+::: notes
+The warm argument was added later, after profiling. Start by explaining warm = FALSE.
+:::
+
+## Running it
+
+```{r}
+#| label: run-gem
+theta_gem <- em(par0, create_gem_step(x, nu))
+theta_gem
+loglik(theta_gem, x, nu)
+```
+
+`em()` is the driver from the lecture (same stopping rule: $\|\theta_n - \theta_{n-1}\|^2 \le \varepsilon(\|\theta_n\|^2 + \varepsilon)$), extended so the criterion is a function argument. More on that later.
+
+# Testing
+
+## How can I test that the implementation is correct?
+
+| What | How |
+|------|-----|
+| Building blocks | `ldt_ls()` against `dt()`; mixture density integrates to 1 |
+| Analytic gradient of $Q$ | against `numDeriv::grad()` |
+| Fisher's identity $\nabla \ell(\theta) = \nabla_\theta Q(\theta \mid \theta)$ | against `numDeriv::grad(loglik)` |
+| Different implementations of the same step | naive, readable, optimized R and Rcpp give the same result |
+| GEM property | $Q(\theta_{n+1}\mid\theta_n) \ge Q(\theta_n\mid\theta_n)$ and $\ell(\theta_n)$ non-decreasing |
+| Convergence | all 7 methods reach the same point; $\nabla\ell(\hat\theta) \approx 0$; $\hat\theta$ is a fixed point of the EM map |
+| Statistical sanity | large $N$ recovers the true parameters |
+| Fisher information | three different methods agree |
+
+```{r}
+#| eval: false
+test_that("gradient of Q matches numerical differentiation", {
+  num <- numDeriv::grad(function(p) Q(p, par0, x, nu), par_rand)
+  expect_equal(grad_Q(par_rand, par0, x, nu), num, tolerance = 1e-6)
+})
+```
+
+## Running the test suite
+
+```{r}
+#| label: run-tests
+test_res <- testthat::test_file("tests/test-tmix.R", reporter = "silent")
+as.data.frame(test_res)[, c("test", "nb", "failed", "error")]
+```
+
+. . .
+
+[While writing the tests I passed the data to `numDeriv::jacobian(f, par, x = x)` — but `x` is also the name of `jacobian()`'s own argument, so it silently differentiated with respect to the *data*. Now data are passed via closures.]{.lesson}
+
+# Alternative solutions
+
+## Idea: add *more* missing data
+
+A $t$-variable is a scale mixture of normals: with $W \mid Z = j \sim \Gamma(\nu_j/2, \text{rate} = \nu_j/2)$ and
+$$
+X \mid W = w, Z = j \sim \mathcal{N}(\mu_j, \sigma_j^2 / w)
+$$
+we get $X \mid Z = j \sim t(\mu_j, \sigma_j^2, \nu_j)$. Complete data $(X, Z, W)$:
+
+- $W \mid X = x, Z = j \sim \Gamma\big(\tfrac{\nu_j + 1}{2}, \tfrac{\nu_j + (x-\mu_j)^2/\sigma_j^2}{2}\big)$, so $E(W \mid x, Z = j) = \frac{\nu_j+1}{\nu_j + (x-\mu_j)^2/\sigma_j^2} = w_{ij}$
+- $Q_{\text{aug}}$ is a *weighted Gaussian* log-likelihood → **closed-form M-step**:
+
+$$
+p = \tfrac1N \textstyle\sum_i \gamma_i, \qquad
+\mu_1 = \frac{\sum_i \gamma_i w_{i1} x_i}{\sum_i \gamma_i w_{i1}}, \qquad
+\sigma_1^2 = \frac{\sum_i \gamma_i w_{i1} (x_i - \mu_1)^2}{\sum_i \gamma_i}
+$$
+
+::: {.small-code}
+```{r}
+#| eval: false
+#| code: !expr c(show_fun("m_step_aug"), "", show_fun("create_em_aug_step"))
+```
+:::
+
+## Insight: the augmented EM is a *scaled* gradient step on $Q$
+
+Using $\partial_{\mu_1} Q = \sum_i \gamma_i w_{i1}(x_i - \mu_1)/\sigma_1^2$:
+
+$$
+\mu_1^{\text{new}} = \frac{\sum_i \gamma_i w_{i1} x_i}{\sum_i \gamma_i w_{i1}}
+= \mu_1 + \frac{\sigma_1^2}{\sum_i \gamma_i w_{i1}}\, \partial_{\mu_1} Q(\theta \mid \theta)
+$$
+
+- The augmented EM is **also a GEM for the original $Q$**: it takes a gradient step with an automatically chosen step size $\sigma^2 / \sum_i \gamma_i w_{i1}$, which is guaranteed to increase $Q$ (it is an MM-step).
+- Compare with version 1: the step size $\approx \sigma^2 / N_1$ explains why a fixed step size could not work.
+
+. . .
+
+[Two different sets of missing data give two different EM algorithms for the same likelihood. Choosing the missing data cleverly gives a closed-form M-step.]{.lesson}
+
+## More alternatives
+
+**Exact EM** (only $Z$ missing): solve the M-step numerically — a weighted $t$-MLE per component with `optim(method = "BFGS")` in $(\mu, \log\sigma)$.
+
+**Direct optimization of $\ell(\theta)$** — the gradient comes for free from Fisher's identity: `grad_loglik <- function(par, x, nu) grad_Q(par, par, x, nu)`
+
+- Gradient ascent with backtracking on $\ell$ (`create_gd_step()`)
+- BFGS via `optim()` in $\eta = (\operatorname{logit} p, \mu_1, \mu_2, \log\sigma_1, \log\sigma_2)$ (`fit_bfgs()`)
+
+. . .
+
+[The GEM gradient step at $\theta_n$ uses $\nabla_\theta Q(\theta_n \mid \theta_n) = \nabla \ell(\theta_n)$ — the *same direction* as gradient ascent on $\ell$. The differences are the exact $p$-update and the line search on $Q$ instead of $\ell$.]{.lesson}
+
+## All seven methods agree
+
+```{r}
+#| label: all-methods
+fits <- lapply(tmix_methods, function(m) tmix(x, nu, par0, method = m))
+data.frame(
+  method = tmix_methods,
+  iterations = sapply(fits, `[[`, "iter"),
+  loglik = sapply(fits, `[[`, "loglik"),
+  t(sapply(fits, coef))
+)
+```
+
+(`em_aug_fast` and `em_aug_cpp` are optimized versions of `em_aug` — see profiling. BFGS "iterations" are gradient evaluations.)
+
+# Code structure
+
+## One driver, many step functions
+
+```{r}
+#| eval: false
+#| code: !expr c(show_fun("em"), "", show_fun("par_conv"))
+```
+
+- Every algorithm (EM, GEM, gradient ascent) is a map $\theta \mapsto \theta_{\text{new}}$ created by a **function factory** (`create_*_step(x, nu)`), which stores data and state (e.g. the last step size) in its closure.
+- The convergence criterion is a **function argument** → *exactly* the same criterion can be used for all algorithms.
+- Callback `cb` for tracing (own `make_tracer()`, like `CSwR::tracer()`, which subtracts its own overhead from the time).
+
+## An S3 class on top
+
+```{r}
+#| label: s3
+fit <- tmix(x, nu, method = "em_aug")
+fit
+```
+
+:::: {.columns}
+::: {.column width="50%"}
+```{r}
+#| label: s3-plot
+#| fig-width: 6
+#| fig-height: 3.6
+plot(fit)
+```
+:::
+::: {.column width="50%"}
+Methods: `print()`, `plot()`, `coef()`, `logLik()` (so `AIC()` works), `vcov()` (Fisher information) and `predict()` (responsibilities).
+
+Files:
+
+- `R/tmix-model.R` — density, $\ell$, E-step, $Q$, $\nabla Q$
+- `R/em-algorithms.R` — driver + EM/GEM steps
+- `R/direct-methods.R` — gradient ascent, BFGS
+- `R/fisher.R`, `R/tracer.R`, `R/tmix-class.R`
+- `src/em_aug_step.cpp`, `tests/test-tmix.R`
+:::
+::::
+
+# Convergence
+
+## Tracing the algorithms
+
+```{r}
+#| label: traces
+par_hat <- em(par0, create_em_aug_step(x, nu), conv = par_conv(1e-24), maxit = 2000)
+ll_hat <- loglik(par_hat, x, nu)
+runs <- list(
+  em_aug   = function(cb) em(par0, create_em_aug_step(x, nu), cb = cb, conv = par_conv(1e-24), maxit = 150),
+  em_exact = function(cb) em(par0, create_em_exact_step(x, nu), cb = cb, conv = par_conv(1e-24), maxit = 150),
+  gem      = function(cb) em(par0, create_gem_step(x, nu), cb = cb, conv = par_conv(1e-24), maxit = 150),
+  gd       = function(cb) em(par0, create_gd_step(x, nu), cb = cb, conv = par_conv(1e-24), maxit = 150)
+)
+traces <- do.call(rbind, Map(trace_run, runs, label = names(runs), MoreArgs = list(x = x, nu = nu)))
+traces$par_dist <- sqrt(rowSums(sweep(as.matrix(traces[, 3:7]), 2, par_hat)^2))
+```
+
+```{r}
+#| label: fig-traces
+#| echo: false
+#| fig-height: 3.8
+p1 <- ggplot(traces, aes(n, pmax(ll_hat - loglik, 1e-16), colour = method)) +
+  geom_line(linewidth = 0.9) + scale_y_log10() +
+  scale_colour_manual(values = method_cols) +
+  labs(x = "iteration", y = expression(hat(l) - l(theta[n])))
+p2 <- ggplot(traces, aes(n, pmax(par_dist, 1e-16), colour = method)) +
+  geom_line(linewidth = 0.9) + scale_y_log10() +
+  scale_colour_manual(values = method_cols) +
+  labs(x = "iteration", y = expression(group("||", theta[n] - hat(theta), "||")))
+p1 + p2 + plot_layout(guides = "collect")
+```
+
+All four increase $\ell$ monotonically and converge **linearly** (straight lines on log scale).
+
+## The stopping criterion is not neutral
+
+```{r}
+#| label: criterion
+crit <- expand.grid(eps = 10^-c(6, 8, 10, 12), method = c("em_aug", "gem"), stringsAsFactors = FALSE)
+crit_res <- t(mapply(function(eps, method) {
+  step <- if (method == "em_aug") create_em_aug_step(x, nu) else create_gem_step(x, nu)
+  th <- em(par0, step, eps = eps)
+  c(iter = attr(th, "iter"), gap = ll_hat - loglik(th, x, nu),
+    grad_norm = sqrt(sum(grad_loglik(th, x, nu)^2)) / length(x))
+}, crit$eps, crit$method))
+cbind(crit, signif(crit_res, 3))
+```
+
+- Near $\hat\theta$: $\theta_n - \hat\theta \approx \rho\,(\theta_{n-1} - \hat\theta)$, so $\|\theta_n - \hat\theta\| \approx \frac{\rho}{1-\rho}\|\theta_n - \theta_{n-1}\|$.
+- A slowly converging algorithm (large $\rho$) takes small steps and **stops further from the optimum** for the same $\varepsilon$.
+
+[Same $\varepsilon$ ≠ same accuracy. For benchmarks I either stop on the **gradient** $\|\nabla\ell(\theta_n)\|/N \le \text{tol}$ (cheap thanks to Fisher's identity: `grad_conv()`) or compare convergence as a function of **real time**.]{.lesson}
+
+# Benchmarking
+
+## `bench::mark` with the same (gradient) criterion
+
+```{r}
+#| label: bench-methods
+conv <- grad_conv(x, nu, tol = 1e-7)
+same_estimate <- function(a, b) isTRUE(all.equal(as.vector(a), as.vector(b), tolerance = 1e-5))
+bm <- bench::mark(
+  em_aug   = em(par0, create_em_aug_step(x, nu), conv = conv),
+  em_exact = em(par0, create_em_exact_step(x, nu), conv = conv),
+  gem      = em(par0, create_gem_step(x, nu, warm = TRUE), conv = conv),
+  gem_cold = em(par0, create_gem_step(x, nu), conv = conv),
+  gd       = em(par0, create_gd_step(x, nu), conv = conv),
+  bfgs     = fit_bfgs(par0, x, nu, reltol = 1e-12),
+  check = same_estimate, min_iterations = 20 # all methods must give the same estimate
+)
+res <- bm$result
+data.frame(method = as.character(bm$expression), median = format(bm$median), mem = format(bm$mem_alloc),
+  iter = sapply(res, attr, "iter"),
+  gap = signif(sapply(res, function(p) ll_hat - loglik(p, x, nu)), 2))
+```
+
+```{r}
+#| label: fig-bench
+#| echo: false
+#| fig-height: 3
+plot(bm, type = "violin") + labs(x = NULL)
+```
+
+## Convergence as a function of real time
+
+A larger data set ($N = 5000$) so that times are not dominated by overhead:
+
+```{r}
+#| label: time-traces
+#| code-fold: true
+set.seed(7)
+x_big <- rtmix(5000, par_true, nu)
+p0_big <- default_start(x_big)
+ll_hat_big <- loglik(em(p0_big, create_em_aug_step(x_big, nu), conv = par_conv(1e-24), maxit = 3000), x_big, nu)
+runs_big <- list(
+  em_aug   = function(cb) em(p0_big, create_em_aug_step(x_big, nu), cb = cb, conv = par_conv(1e-24), maxit = 200),
+  em_exact = function(cb) em(p0_big, create_em_exact_step(x_big, nu), cb = cb, conv = par_conv(1e-24), maxit = 60),
+  gem      = function(cb) em(p0_big, create_gem_step(x_big, nu, warm = TRUE), cb = cb, conv = par_conv(1e-24), maxit = 200),
+  gem_cold = function(cb) em(p0_big, create_gem_step(x_big, nu), cb = cb, conv = par_conv(1e-24), maxit = 200),
+  gd       = function(cb) em(p0_big, create_gd_step(x_big, nu), cb = cb, conv = par_conv(1e-24), maxit = 300),
+  bfgs     = function(cb) fit_bfgs(p0_big, x_big, nu, reltol = 1e-16, cb = cb)
+)
+time_traces <- do.call(rbind, Map(trace_run, runs_big, label = names(runs_big),
+                                  MoreArgs = list(x = x_big, nu = nu)))
+# BFGS is traced in every function evaluation (also in line searches): use the best value so far
+time_traces <- do.call(rbind, lapply(split(time_traces, time_traces$method),
+  function(d) transform(d, gap = pmax(ll_hat_big - cummax(loglik), 1e-12))))
+```
+
+```{r}
+#| label: fig-time
+#| echo: false
+#| fig-height: 3.8
+ggplot(time_traces, aes(1000 * time, gap, colour = method)) +
+  geom_line(linewidth = 0.9) + scale_y_log10() +
+  scale_colour_manual(values = method_cols) +
+  coord_cartesian(xlim = c(0, 400)) +
+  labs(x = "time (ms)", y = expression(hat(l) - l(theta[n])))
+```
+
+[Per iteration the exact EM is best, but its M-step is expensive. In real time the cheap closed-form augmented EM and BFGS win. The GEM trades fewer iterations for line-search cost.]{.lesson}
+
+# Profiling
+
+## Profiling the GEM (version 2)
+
+```{r}
+#| label: prof-gem
+prof_file <- tempfile()
+Rprof(prof_file, interval = 0.005)
+for (i in 1:15) em(p0_big, create_gem_step(x_big, nu))
+Rprof(NULL)
+prof <- summaryRprof(prof_file)$by.total
+prof[rownames(prof) %in% dQuote(c("em", "em_step", "Q", "ldt_ls", "grad_Q", "e_step", "plogis"), FALSE), ]
+```
+
+`profvis::profvis(em(p0_big, create_gem_step(x_big, nu)))` gives the same picture interactively (see `R/profiling-demo.R`).
+
+. . .
+
+[Almost all time is spent in `Q()` → `ldt_ls()` **inside the line search**: backtracking starts from $\gamma_0 = 1$ in every iteration and needs ~10 halvings before $\gamma \approx \sigma^2/N$.]{.problem}
+
+## Fix: warm-start the line search
+
+Start from the last accepted step size divided by $d$ (i.e. try a slightly *larger* step first): `warm = TRUE`.
+
+```{r}
+#| label: bench-warm
+bm_warm <- bench::mark(
+  cold = em(p0_big, create_gem_step(x_big, nu, warm = FALSE), conv = grad_conv(x_big, nu, 1e-7)),
+  warm = em(p0_big, create_gem_step(x_big, nu, warm = TRUE), conv = grad_conv(x_big, nu, 1e-7)),
+  check = same_estimate, min_iterations = 5
+)
+data.frame(expression = as.character(bm_warm$expression), median = format(bm_warm$median),
+           mem_alloc = format(bm_warm$mem_alloc), iter = sapply(bm_warm$result, attr, "iter"))
+```
+
+[Profiling pointed to a single line of code. Keeping *state* (the step size) in the closure of the step function halved the run time.]{.lesson}
+
+## Profiling the augmented EM
+
+```{r}
+#| label: prof-aug
+Rprof(prof_file, interval = 0.005)
+for (i in 1:15) em(p0_big, create_em_aug_step(x_big, nu), maxit = 100)
+Rprof(NULL)
+head(summaryRprof(prof_file)$by.self, 6)
+```
+
+Hot spots: `plogis()`, `ldt_ls()` (recomputes `lgamma()` constants every time), `cbind()` in `log_comp()`, and the squared residuals are computed twice (in `e_step()` and for $w_{ij}$).
+
+## My first "optimization" made things slower
+
+My first idea was to avoid `exp(log1p(.))` by computing $(1 + d/\nu)^{-(\nu+1)/2}$ directly. That version was *slower*. Measuring the pieces explains why:
+
+```{r}
+#| label: micro
+r <- rnorm(5000)
+bench::mark(
+  pow_integer    = (1 + r^2 / 5)^-3,      # nu = 5:  exponent -3
+  pow_fractional = (1 + r^2 / 10)^-5.5,   # nu = 10: exponent -5.5
+  exp_log1p      = exp(-5.5 * log1p(r^2 / 10)),
+  plogis         = plogis(r),
+  one_over       = 1 / (1 + exp(-r)),
+  dt             = dt(r, 10),
+  check = FALSE
+)[, c("expression", "median", "itr/sec")]
+```
+
+[`^` is only fast for *integer* exponents (R special-cases them); with $\nu_2 = 10$ the exponent is $-5.5$ and `pow()` is slower than `exp(log1p())`. `dt()` is slow, and `plogis()` is slower than `1/(1 + exp(-x))`. Measure, don't guess.]{.lesson}
+
+## Optimized R and Rcpp
+
+:::: {.columns}
+::: {.column width="50%"}
+::: {.small-code}
+```{r}
+#| eval: false
+#| code: !expr show_fun("create_em_aug_step_fast")
+```
+:::
+:::
+::: {.column width="50%"}
+::: {.small-code}
+```{r}
+#| echo: false
+#| class-output: cpp
+cat(readLines("src/em_aug_step.cpp")[25:50], sep = "\n")
+```
+:::
+The C++ version does E- and M-step in two passes over the data, without allocating any R vectors.
+:::
+::::
+
+## `bench::press`: cost per EM step as a function of $N$
+
+```{r}
+#| label: press
+press_res <- bench::press(N = c(500, 2000, 8000, 32000), {
+  xN <- rtmix(N, par_true, nu)
+  pN <- default_start(xN)
+  s_v1 <- create_em_aug_step_v1(xN, nu)
+  s_readable <- create_em_aug_step(xN, nu)
+  s_fast <- create_em_aug_step_fast(xN, nu)
+  bench::mark(v1 = s_v1(pN), readable = s_readable(pN), fast = s_fast(pN),
+              cpp = em_aug_step_cpp(xN, pN, nu), check = TRUE) # check = TRUE: same result
+})
+```
+
+```{r}
+#| label: fig-press
+#| echo: false
+#| fig-height: 3.3
+press_df <- data.frame(expression = as.character(press_res$expression), N = press_res$N,
+                       median = as.numeric(press_res$median), mem = as.numeric(press_res$mem_alloc))
+q1 <- ggplot(press_df, aes(N, 1e6 * median, colour = expression)) + geom_line() + geom_point() +
+  scale_x_log10() + scale_y_log10() + labs(y = "median time (µs)", colour = NULL)
+v1_time <- with(subset(press_df, expression == "v1"), setNames(median, N))
+press_df$speedup <- v1_time[as.character(press_df$N)] / press_df$median
+q2 <- ggplot(press_df, aes(N, speedup, colour = expression)) +
+  geom_line() + geom_point() + scale_x_log10() + labs(y = "speed-up relative to v1", colour = NULL)
+q1 + q2 + plot_layout(guides = "collect")
+```
+
+[The biggest gain came from dropping `dt()` and the data frame (v1 → readable). Rcpp only gives a modest extra factor: vectorized R already runs in C, and the time is dominated by `log1p()` and `exp()`, which cost the same in C++. Rcpp's real win here is **zero memory allocation**.]{.lesson}
+
+# Theory check
+
+## Fisher information — three ways (lecture 10)
+
+```{r}
+#| label: fisher
+i_score <- fisher_score(par_hat, x, nu)          # 1. differentiate the score (Fisher's identity)
+louis   <- fisher_louis(par_hat, x, nu)          # 2. i_X = i_Y - i_{Y|X}, complete data (X, Z)
+em_map  <- fisher_em_map(par_hat, x, nu)         # 3. i_X = (I - DPhi^T) i_Y, augmented EM map
+c(louis = max(abs(louis$iX - i_score)), em_map = max(abs(em_map$iX - i_score)))
+rbind(estimate = par_hat, se = sqrt(diag(solve(i_score))))
+```
+
+The augmented EM map uses *other* complete data $(X, Z, W)$, so its $i_Y$ and $D\Phi$ differ from method 2 — but $i_X$ is the same, as it must be.
+
+## Convergence rates: theory vs practice
+
+Rate of the EM algorithm $= \rho(D\Phi(\hat\theta)) = \rho(i_{Y\mid X}\, i_Y^{-1})$ = "fraction of missing information".
+
+```{r}
+#| label: rates
+rate_emp <- sapply(split(traces, traces$method), function(d) {
+  d <- subset(d, par_dist > 1e-6 & par_dist < 1e-2) # linear phase, above the numerical floor
+  unname(exp(coef(lm(log(par_dist) ~ n, data = d))["n"]))
+})
+data.frame(
+  method = names(rate_emp),
+  empirical = round(rate_emp, 3),
+  theory = c(em_aug = spectral_radius(em_map$DPhi),
+             em_exact = spectral_radius(louis$iYX %*% solve(louis$iY)),
+             gem = NA, gd = NA)[names(rate_emp)]
+)
+```
+
+- The empirical rates (slope of $\log\|\theta_n - \hat\theta\|$) match the theoretical rates.
+- All traces flatten at $\|\theta_n - \hat\theta\| \approx 10^{-8}$: there $\hat\ell - \ell(\theta_n) \approx 10^{-13} \approx$ machine precision $\times |\ell|$, so no algorithm can see further progress. The rates are estimated above this floor.
+- The augmented EM treats $W$ as missing too → **more missing information → slower rate** than the exact EM, but each iteration is much cheaper.
+- The GEM has no fixed EM map (the step size comes from a line search), so there is no theoretical rate — empirically it is `r round(rate_emp[["gem"]], 2)`, as good as the exact EM, because the line search along $\nabla\ell$ picks near-optimal steps.
+
+[This explains the benchmark: "we trade slower convergence for faster iterations" (lecture 10), and the numbers confirm the implementation of both EM maps.]{.lesson}
+
+## Do the standard errors make sense? 200 simulated data sets
+
+```{r}
+#| label: sim-study
+set.seed(123)
+sims <- replicate(200, {
+  xs <- rtmix(400, par_true, nu)
+  th <- em(par_true, function(p) em_aug_step_cpp(xs, p, nu), eps = 1e-14)
+  c(th, sqrt(diag(solve(fisher_score(th, xs, nu)))))
+})
+data.frame(true = par_true, mean_estimate = rowMeans(sims[1:5, ]),
+           empirical_sd = apply(sims[1:5, ], 1, sd), mean_fisher_se = rowMeans(sims[6:10, ]))
+```
+
+The Fisher-information standard errors agree with the actual sampling variability (started at the truth to stay at the "correct" labeling — see next slide).
+
+# Robustness
+
+## Starting values: 100 random starts
+
+```{r}
+#| label: multistart
+set.seed(1)
+starts <- replicate(100, c(runif(1, 0.1, 0.9), runif(2, min(x), max(x)), runif(2, 0.2, 3)))
+ms <- do.call(rbind, lapply(c("em_aug", "gem", "bfgs"), function(m) {
+  do.call(rbind, lapply(seq_len(ncol(starts)), function(i) {
+    f <- tmix(x, nu, starts[, i], method = m)
+    data.frame(method = m, t(coef(f)), loglik = f$loglik)
+  }))
+}))
+ms$solution <- with(ms, ifelse(pmin(p, 1 - p) < 1e-3, "a component vanishes (p -> 0 or 1)",
+                        ifelse(pmin(sigma1, sigma2) < 0.1, "spike (sigma -> 0)",
+                        ifelse(mu1 > mu2, "labels swapped", "labels as simulated"))))
+table(ms$solution, ms$method)
+aggregate(cbind(loglik, p, mu1, mu2, sigma1, sigma2) ~ solution, ms, median)
+```
+
+## What the multi-start taught me
+
+- With $\nu_1 \neq \nu_2$, swapping the labels gives a **different** model: here the $t_5$-component on the right cluster fits *better* ($\ell = -782.2$ vs $-784.3$). Two genuine local maxima → always compare several starts (at least both labelings).
+- The **augmented EM always found one of the two maxima**. GEM and BFGS sometimes let a component vanish ($p \to 0$): $p$ collapses faster than the gradient steps can move $(\mu, \sigma)$ to the data, and $p = 0$ is absorbing for EM ($\gamma_i = 0$ for all $i$).
+- BFGS can also run into the unbounded-likelihood "spike" ($\sigma_j \to 0$ on a single point).
+
+[Robustness towards starting values is a property of the algorithm, not only of the likelihood. The closed-form augmented EM was both the fastest and the most robust.]{.lesson}
+
+## Outliers: Gaussian vs $t$ mixture
+
+20 data sets ($N = 400$); add $k$ outliers $\pm U(8, 20)$; fit both mixtures by EM (started at the truth).
+
+```{r}
+#| label: outliers
+#| code-fold: true
+set.seed(3)
+out_res <- do.call(rbind, lapply(1:20, function(rep) {
+  x0 <- rtmix(400, par_true, nu)
+  out <- runif(40, 8, 20) * sample(c(-1, 1), 40, replace = TRUE)
+  do.call(rbind, lapply(c(0, 5, 10, 20, 40), function(k) {
+    xc <- c(x0, out[seq_len(k)])
+    rbind(
+      data.frame(k, model = "t mixture", t(em(par_true, create_em_aug_step(xc, nu)))),
+      data.frame(k, model = "Gaussian mixture", t(em(par_true, create_em_gauss_step(xc), maxit = 5000)))
+    )
+  }))
+}))
+out_long <- reshape(out_res, direction = "long", varying = par_names, v.names = "estimate",
+                    timevar = "parameter", times = par_names)
+```
+
+```{r}
+#| label: fig-outliers
+#| echo: false
+#| fig-height: 3.6
+out_med <- aggregate(estimate ~ k + model + parameter, out_long, median)
+ggplot(out_med, aes(k, estimate, colour = model)) +
+  geom_hline(data = data.frame(parameter = par_names, value = par_true), aes(yintercept = value), linetype = 2) +
+  geom_line(linewidth = 0.9) + geom_point() +
+  facet_wrap(~parameter, nrow = 1, scales = "free_y") +
+  labs(x = "number of outliers", y = "median estimate", colour = NULL) +
+  theme(legend.position = "bottom")
+```
+
+[Already 5 outliers (1%) ruin the Gaussian mixture's $\sigma_1$, and at 20 outliers one Gaussian component is used for the outliers alone. The $t$-mixture degrades gracefully — but with fixed $\nu$ it is not immune either.]{.lesson}
+
+# Summary
+
+## What I learned
+
+1. **Correctness**: a GEM step must *guarantee* an increase of $Q$ (v1 did not). Testing with `numDeriv`, Fisher's identity and monotonicity caught the bugs — including a silent argument-name clash in `numDeriv`.
+2. **Alternatives**: choosing more missing data ($W$) gives a closed-form EM, which is also a scaled gradient step on $Q$. Exact EM, gradient ascent and BFGS all reach the same point.
+3. **Structure**: one generic driver + step-function factories + pluggable convergence criterion; an S3 class `tmix` on top.
+4. **Benchmarking**: the same $\varepsilon$ does not mean the same accuracy — compare with a gradient criterion or against real time.
+5. **Profiling**: the line search dominated the GEM (fixed by a warm start, 2× faster); `dt()`/`plogis()` dominated the EM. My own guess (`pow`) was wrong. Rcpp gave a modest gain and zero allocations.
+6. **Theory matches practice**: three Fisher information methods agree, SEs match simulations, and the observed convergence rates equal $\rho(D\Phi)$.
+7. **Robustness**: multiple local maxima (labelings), vanishing components for gradient-based methods, and the $t$-mixture is far more robust to outliers than the Gaussian mixture.
