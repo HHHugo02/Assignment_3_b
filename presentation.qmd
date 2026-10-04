@@ -45,11 +45,10 @@ show_fun <- function(name) {
 ## Roadmap
 
 1. **A simple implementation** — the formulas coded directly, on the density scale, with R's `dt()`
-2. **Is it correct?** — checks against theory, numerical derivatives, simulation and R packages (`teigen`, `mclust`)
+2. **Is it correct?** — a test against `optim()`
 3. **Where is it slow?** — profiling with `Rprof` and `profvis`
-4. **A faster implementation** — a log-scale version, and an S3 design with two classes so the two implementations share the same GEM code and tests
-
-Throughout: [boxes like this one]{.lesson} mark what I learned along the way.
+4. **A faster implementation** — a log-scale version, and an S3 design with two classes so the two implementations share the same GEM code
+5. **How good is it?** — `bench::press` against R's own optimizers
 
 # A simple implementation
 
@@ -82,7 +81,7 @@ round(par0, 3)
 
 ::: {.column width="55%"}
 ```{r}
-#| label: fig-data
+#| label: plot-data
 #| echo: false
 #| fig-width: 6.5
 #| fig-height: 4.3
@@ -124,27 +123,27 @@ The trick of EM is to choose missing data such that the complete-data problem is
 
 ## E-step: from $\ell_c$ to $Q$
 
-$Q(\theta \mid \theta') = E_{\theta'}\big(\ell_c(\theta) \mid X = x\big)$ — average $\ell_c$ over what the labels could be, given the data and the current guess $\theta'$.
+$Q(\theta \mid \hat\theta) = E_{\hat\theta}\big(\ell_c(\theta) \mid X = x\big)$ — average $\ell_c$ over what the labels could be, given the data and the current guess $\hat\theta$.
 
 **Step 1 — linearity.** Given $x$, the terms $\log p + \log f_1(x_i)$ are just numbers, so the expectation only hits the indicators:
 $$
-E_{\theta'}\big(\mathbf{1}(Z_i = 1) \mid X = x\big) = P_{\theta'}(Z_i = 1 \mid X_i = x_i) =: \gamma_i
+E_{\hat\theta}\big(\mathbf{1}(Z_i = 1) \mid X = x\big) = P_{\hat\theta}(Z_i = 1 \mid X_i = x_i) =: \gamma_i
 $$
 
-**Step 2 — Bayes' formula.**
+**Step 2 — Bayes' formula.** With $\hat f_j$ the density of component $j$ at the current guess $(\hat\mu_j, \hat\sigma_j)$:
 $$
-\gamma_i = \frac{P(Z_i = 1)\, f(x_i \mid Z_i = 1)}{f(x_i)} = \frac{p' f_1'(x_i)}{p' f_1'(x_i) + (1 - p') f_2'(x_i)}
+\gamma_i = \frac{P(Z_i = 1)\, f(x_i \mid Z_i = 1)}{f(x_i)} = \frac{\hat p\, \hat f_1(x_i)}{\hat p\, \hat f_1(x_i) + (1 - \hat p)\, \hat f_2(x_i)}
 $$
 
 **Result:**
 $$
-Q(\theta \mid \theta') = \sum_{i=1}^N \gamma_i \big(\log p + \log f_1(x_i)\big) + (1 - \gamma_i)\big(\log(1-p) + \log f_2(x_i)\big)
+Q(\theta \mid \hat\theta) = \sum_{i=1}^N \gamma_i \big(\log p + \log f_1(x_i)\big) + (1 - \gamma_i)\big(\log(1-p) + \log f_2(x_i)\big)
 $$
 
-The $\gamma_i$ are computed from the **old** $\theta'$ and are fixed numbers ("soft labels"); $\theta$ in the logs is the **new** parameter we optimize over.
+The $\gamma_i$ are computed from the **old** $\hat\theta$ and are fixed numbers ("soft labels"); $\theta$ in the logs is the **new** parameter we optimize over.
 
 ```{r}
-#| label: fig-gamma
+#| label: plot-gamma
 #| echo: false
 #| fig-height: 2.6
 par_hat <- gem(x, nu, eps = 1e-14)
@@ -186,83 +185,56 @@ $$
 
 . . .
 
-Setting $\partial_{\mu_1} Q = 0$ gives $\mu_1 = \frac{\sum_i \gamma_i w_{i1} x_i}{\sum_i \gamma_i w_{i1}}$ — but $w_{i1}$ depends on $\mu_1$ and $\sigma_1$ themselves: a fixed-point equation, not a formula.
+Setting $\partial_{\mu_1} Q = 0$ and $\partial_{\sigma_1} Q = 0$ gives
+$$
+\mu_1 = \frac{\sum_i \gamma_i w_{i1} x_i}{\sum_i \gamma_i w_{i1}}, \qquad
+\sigma_1^2 = \frac{\sum_i \gamma_i w_{i1} r_{i1}^2}{\sum_i \gamma_i}
+$$
+— but $w_{i1}$ depends on $\mu_1$ and $\sigma_1$ themselves: fixed-point equations, not formulas.
 
 [No closed-form M-step for $(\mu, \sigma)$. **Generalized EM:** we only need $Q(\theta_{n+1} \mid \theta_n) \ge Q(\theta_n \mid \theta_n)$, so: exact update of $p$ + one uphill (gradient) step for $(\mu_1, \mu_2, \sigma_1, \sigma_2)$.]{.problem}
 
-## The code: density, log-likelihood and E-step
-
-Written exactly as the formulas, directly on the density scale. The location-scale $t$-density is $f(x \mid \mu, \sigma^2, \nu) = \frac{1}{\sigma} f_{t_\nu}\big(\frac{x - \mu}{\sigma}\big)$, so R's `dt()` does the work:
-
-::: {.small-code}
-```{r}
-#| eval: false
-#| code: !expr c(show_fun("dt_ls"), "", show_fun("dtmix"), "", show_fun("loglik"), "", show_fun("e_step"))
-```
-:::
-
-## The code: $Q$ and its gradient
-
-`Q()` and `grad_Q()` take the responsibilities `gam` instead of $\theta'$: the $\gamma_i$ are *all* that $Q$ needs from $\theta'$, and the E-step is then done once per iteration.
-
-| Math | Code |
-|------|------|
-| $\gamma_i \big(\log p + \log f_1(x_i)\big)$ | `gam * log(par[1] * dt_ls(x, par[2], par[4], nu[1]))` |
-| $r_{i1}$, $w_{i1}$ | `r1 <- x - par[2]`, `w1 <- (nu[1] + 1) / (nu[1] + r1^2 / s1^2)` |
-| $\partial_{\mu_1} Q = \sum_i \gamma_i w_{i1} r_{i1} / \sigma_1^2$ | `sum(gam * w1 * r1) / s1^2` |
-
-::: {.small-code}
-```{r}
-#| eval: false
-#| code: !expr c(show_fun("Q"), "", show_fun("grad_Q"))
-```
-:::
 
 ## One gradient step — but how long?
 
-First iteration from `par0`: E-step, update $p$, and step along the gradient with a few *fixed* step sizes:
+First iteration from `par0`: E-step, update $p$, and then move a step of length $s$ along the gradient, $\theta + s\, g$. How much does $Q$ change?
 
 ```{r}
 #| label: fixed-steps
+#| echo: false
 gam <- e_step(par0, x, nu)
 par1 <- par0
 par1[1] <- mean(gam)                       # exact M-step for p
 g <- grad_Q(par1, gam, x, nu)
 g[1] <- 0
-step_sizes <- c(0.1, 0.01, 0.001, 0.0001)
-new_par <- t(sapply(step_sizes, function(s) par1 + s * g))
-data.frame(step = step_sizes,
-           new_sigma1 = new_par[, 4], new_sigma2 = new_par[, 5],
-           change_in_Q = apply(new_par, 1, function(p) Q(p, gam, x, nu) - Q(par1, gam, x, nu)))
+change_in_Q <- function(s) Q(par1 + s * g, gam, x, nu) - Q(par1, gam, x, nu)
 ```
 
-[The gradient only gives the *direction*. A very long step gives an invalid $\sigma < 0$ (so `NaN`); a long step jumps past the top and $Q$ **decreases** (then it is not a GEM step); too short a step barely moves. The right length depends on the data: the gradient is a sum over $N$ points and scales like $N / \sigma^2$.]{.problem}
+```{r}
+#| label: plot-fixed-steps
+#| echo: false
+#| fig-height: 3.2
+step_df <- data.frame(s = seq(0, 0.0085, length.out = 300))
+step_df$change <- sapply(step_df$s, change_in_Q)
+s_best <- optimize(change_in_Q, c(0, 0.0085), maximum = TRUE)$maximum
+s_zero <- uniroot(change_in_Q, c(s_best, 0.0085))$root
+ggplot(step_df, aes(s, change)) +
+  annotate("rect", xmin = s_zero, xmax = Inf, ymin = -Inf, ymax = Inf, fill = "#d95f02", alpha = 0.12) +
+  geom_hline(yintercept = 0, colour = "grey40") +
+  geom_line(linewidth = 1.1, colour = "#2c7fb8") +
+  geom_vline(xintercept = s_best, linetype = 2, colour = "grey40") +
+  annotate("point", x = s_best, y = change_in_Q(s_best), size = 3) +
+  annotate("text", x = s_best, y = change_in_Q(s_best) + 0.9, label = "best step", size = 4.5) +
+  annotate("text", x = 0.0004, y = -2.2, label = "too short:\nbarely moves", size = 4.5, hjust = 0) +
+  annotate("text", x = s_zero + 0.0002, y = 2.2, label = "too long:\nQ decreases", size = 4.5, hjust = 0, colour = "#d95f02") +
+  labs(x = "step size s", y = "change in Q")
+```
+
+[The gradient only gives the *direction*. A long step jumps past the top and $Q$ **decreases** (then it is not a GEM step), and an even longer one ($s > `r signif(min(-par1[4:5] / g[4:5]), 2)`$) makes $\sigma$ negative; too short a step barely moves. The right length depends on the data: the gradient is a sum over $N$ points and scales like $N / \sigma^2$.]{.problem}
 
 . . .
 
 **Solution — backtracking:** start with a long step and halve it until $Q$ has increased enough (Armijo condition $Q(\theta + s g) \ge Q(\theta) + c\, s\, \|g\|^2$).
-
-## The code: the GEM step
-
-::: {.small-code}
-```{r}
-#| eval: false
-#| code: !expr show_fun("create_gem_step")
-```
-:::
-
-`create_gem_step()` is a **function factory**: it stores the data and returns a function that maps $\theta_n \mapsto \theta_{n+1}$.
-
-## The code: the driver
-
-::: {.small-code}
-```{r}
-#| eval: false
-#| code: !expr c(show_fun("em"), "", show_fun("gem"))
-```
-:::
-
-`em()` is the driver from the lecture, with the same stopping rule $\|\theta_n - \theta_{n-1}\|^2 \le \varepsilon(\|\theta_n\|^2 + \varepsilon)$.
 
 ## Running it
 
@@ -277,7 +249,7 @@ loglik(fit, x, nu)
 :::
 ::: {.column width="55%"}
 ```{r}
-#| label: fig-fit
+#| label: plot-fit
 #| echo: false
 #| fig-width: 6.5
 #| fig-height: 4.3
@@ -298,252 +270,90 @@ ggplot(data.frame(x), aes(x)) +
 
 # Is it correct?
 
-## How can we test that the implementation is correct?
+## A test against `optim()`
 
-Every part is checked against something **independent** of the code being tested:
+`optim()` is R's general-purpose optimizer. It knows nothing about EM: it just maximizes the observed log-likelihood $\ell(\theta)$ directly. If my GEM is implemented correctly, the two must find the same maximum.
 
-| What | Independent reference |
-|------|-----------------------|
-| $t$-density `dt_ls()` | the formula from the assignment, written with `gamma()` |
-| mixture density | integrates to 1 (`integrate()`) |
-| simulation `rtmix()` | Kolmogorov–Smirnov test against the mixture CDF (`pt()`) |
-| E-step | calibration on simulated data with **known** labels |
-| `grad_Q()` | numerical differentiation (`numDeriv::grad()`) |
-| Fisher's identity $\nabla\ell(\theta) = \nabla_\theta Q(\theta \mid \theta)$ | `numDeriv::grad(loglik)` |
-| the GEM property | $Q$ and $\ell$ increase in every iteration |
-| the maximum | `optim()` (BFGS) on the log-likelihood |
-| the whole fit | R package **teigen** ($t$-mixtures, common $\nu$) |
-| the whole fit | R package **mclust** (Gaussian mixtures = the limit $\nu \to \infty$) |
-| statistical sanity | 100 simulated data sets: estimates centred at the truth |
-
-All of it is collected in `tests/test-simple.R` (**testthat**).
-
-## Building blocks
-
-```{r}
-#| label: test-blocks
-# 1. t-density vs. the formula from the assignment (no dt() involved)
-f_formula <- function(x, mu, sigma, nu) {
-  gamma((nu + 1) / 2) / (sqrt(pi * nu * sigma^2) * gamma(nu / 2)) *
-    (1 + (x - mu)^2 / (nu * sigma^2))^(-(nu + 1) / 2)
-}
-z <- seq(-10, 10, length.out = 101)
-all.equal(dt_ls(z, 1, 2, 3), f_formula(z, 1, 2, 3))
-
-# 2. the mixture density integrates to 1
-integrate(dtmix, -Inf, Inf, par = par_true, nu = nu)
-
-# 3. simulated data have the right distribution
-ptmix <- function(q, par, nu) {
-  par[1] * pt((q - par[2]) / par[4], nu[1]) + (1 - par[1]) * pt((q - par[3]) / par[5], nu[2])
-}
-set.seed(3)
-ks.test(rtmix(20000, par_true, nu), ptmix, par = par_true, nu = nu)$p.value
-```
-
-## Is the E-step right? A calibration check
-
-If $\gamma_i = P(Z_i = 1 \mid x_i)$ is computed correctly, then among all points with $\gamma \approx 0.7$, about 70% must come from component 1. Simulate $N = 20\,000$ points **with** their labels and check:
-
-```{r}
-#| label: calibration
-set.seed(3)
-d <- sim_tmix(20000, par_true, nu)        # data frame with x and the true label z
-d$gamma <- e_step(par_true, d$x, nu)
-d$bin <- cut(d$gamma, seq(0, 1, 0.1), include.lowest = TRUE)
-calib <- data.frame(
-  mean_gamma = tapply(d$gamma, d$bin, mean),
-  frac_comp1 = tapply(d$z == 1, d$bin, mean),
-  n = tapply(d$gamma, d$bin, length)
-)
-```
-
-```{r}
-#| label: fig-calibration
-#| echo: false
-#| fig-height: 3.3
-calib$se <- sqrt(calib$mean_gamma * (1 - calib$mean_gamma) / calib$n)
-ggplot(calib, aes(mean_gamma, frac_comp1)) +
-  geom_abline(linetype = 2, colour = "grey50") +
-  geom_errorbar(aes(ymin = frac_comp1 - 1.96 * se, ymax = frac_comp1 + 1.96 * se), width = 0.015) +
-  geom_point(size = 2.5) +
-  coord_equal() +
-  labs(x = expression("average " * gamma * " in bin"), y = "fraction from component 1")
-```
-
-## Derivatives: analytic vs. numerical
-
-```{r}
-#| label: test-derivatives
-par_test <- c(0.4, -0.5, 2.5, 1.3, 0.9)
-gam0 <- e_step(par0, x, nu)
-
-# analytic gradient of Q vs. numerical differentiation
-g <- rbind(analytic  = grad_Q(par_test, gam0, x, nu),
-           numerical = numDeriv::grad(function(p) Q(p, gam0, x, nu), par_test))
-colnames(g) <- names(par_true)
-g
-
-# Fisher's identity: grad_Q(theta | theta) equals the gradient of the log-likelihood
-g <- rbind(fisher_identity = grad_Q(par_test, e_step(par_test, x, nu), x, nu),
-           numerical       = numDeriv::grad(function(p) loglik(p, x, nu), par_test))
-colnames(g) <- names(par_true)
-g
-```
-
-[Deriving by hand and checking against `numDeriv` catches sign and chain-rule errors before they turn into a mysteriously slow or wrong algorithm.]{.lesson}
-
-## Does it behave like a GEM?
-
-```{r}
-#| label: test-monotone
-step <- create_gem_step(x, nu)
-par <- par0
-trace <- NULL
-for (n in 1:40) {
-  gam <- e_step(par, x, nu)
-  par_new <- step(par)
-  trace <- rbind(trace, data.frame(
-    n = n,
-    Q_increase = Q(par_new, gam, x, nu) - Q(par, gam, x, nu),
-    loglik = loglik(par_new, x, nu)
-  ))
-  par <- par_new
-}
-c(smallest_Q_increase = min(trace$Q_increase), smallest_loglik_increase = min(diff(trace$loglik)))
-```
-
-```{r}
-#| label: fig-monotone
-#| echo: false
-#| fig-height: 2.8
-ggplot(trace, aes(n, pmax(loglik(par_hat, x, nu) - loglik, 1e-14))) +
-  geom_line(linewidth = 0.9) + geom_point() + scale_y_log10() +
-  labs(x = "iteration", y = expression(hat(l) - l(theta[n])))
-```
-
-$Q$ increases in every step (guaranteed by the backtracking), and so does $\ell$ — as the EM theory promises. Convergence is linear (a straight line on log scale).
-
-## Same maximum as `optim()`
-
-Maximize the observed log-likelihood directly with BFGS, in the unconstrained parametrization $(\operatorname{logit} p, \mu_1, \mu_2, \log\sigma_1, \log\sigma_2)$:
+Both are started at the same point (`default_start()`):
 
 ```{r}
 #| label: test-optim
+#| echo: false
 nll <- function(eta) -loglik(c(plogis(eta[1]), eta[2:3], exp(eta[4:5])), x, nu)
 eta <- optim(c(qlogis(par0[1]), par0[2:3], log(par0[4:5])), nll,
              method = "BFGS", control = list(reltol = 1e-14, maxit = 1000))$par
 par_optim <- c(plogis(eta[1]), eta[2:3], exp(eta[4:5]))
 
-rbind(gem = par_hat, optim = par_optim)
-c(gem = loglik(par_hat, x, nu), optim = loglik(par_optim, x, nu))
+optim_tab <- rbind(
+  GEM = c(par_hat, loglik(par_hat, x, nu)),
+  `optim() (BFGS)` = c(par_optim, loglik(par_optim, x, nu))
+)
+optim_fmt <- rbind(
+  formatC(optim_tab, format = "f", digits = 4),
+  Difference = formatC(abs(optim_tab[1, ] - optim_tab[2, ]), format = "e", digits = 1)
+)
+knitr::kable(
+  optim_fmt,
+  col.names = c("$p$", "$\\mu_1$", "$\\mu_2$", "$\\sigma_1$", "$\\sigma_2$", "$\\ell(\\hat\\theta)$"),
+  align = "r"
+)
 ```
 
-## Against an R package: teigen
-
-**teigen** fits mixtures of $t$-distributions with its own EM-type algorithm. It requires a *common* $\nu$, so we simulate with $\nu_1 = \nu_2 = 5$ and hold $\nu$ fixed (`dfupdate = FALSE`):
-
-```{r}
-#| label: test-teigen
-set.seed(1)
-x5 <- rtmix(1000, par_true, c(5, 5))
-par_gem5 <- gem(x5, c(5, 5), eps = 1e-14)
-
-tg <- teigen::teigen(x5, Gs = 2, models = "univUU", dfstart = 5, dfupdate = FALSE,
-                     scale = FALSE, verbose = FALSE, eps = c(1e-12, 1e-12))
-o <- order(tg$parameters$mean)              # teigen may order the components differently
-par_teigen <- c(tg$parameters$pig[o][1], tg$parameters$mean[o],
-                sqrt(tg$parameters$sigma[1, 1, o]))   # teigen reports variances
-
-rbind(gem = par_gem5, teigen = par_teigen)
-c(gem = loglik(par_gem5, x5, c(5, 5)), teigen = tg$logl)
-```
-
-## Against an R package: mclust (the Gaussian limit)
-
-As $\nu \to \infty$ the $t$-distribution becomes the normal distribution, so with $\nu = 10^6$ our GEM must agree with a Gaussian mixture fitted by **mclust**:
-
-```{r}
-#| label: test-mclust
-suppressPackageStartupMessages(library(mclust))
-set.seed(2)
-xg <- c(rnorm(600, 0, 1), rnorm(400, 3, 0.7))
-par_gem_gauss <- gem(xg, c(1e6, 1e6), eps = 1e-16, maxit = 5000)
-
-mclust_par <- function(tol) {
-  mc <- Mclust(xg, G = 2, modelNames = "V", verbose = FALSE,
-               control = emControl(tol = c(tol, sqrt(.Machine$double.eps))))
-  unname(c(mc$parameters$pro[1], mc$parameters$mean, sqrt(mc$parameters$variance$sigmasq)))
-}
-rbind(gem = par_gem_gauss,
-      mclust_default_tol = mclust_par(1e-5),
-      mclust_tol_1e12 = mclust_par(1e-12))
-```
-
-[At first mclust and my GEM disagreed in the second decimal — and my log-likelihood was *higher*. mclust's default tolerance (`1e-5` relative change) stops early. With the same strict tolerance the two agree. A fair comparison needs the same convergence criterion.]{.lesson}
-
-## Statistical sanity: 100 simulated data sets
-
-```{r}
-#| label: test-sim
-set.seed(123)
-est <- t(replicate(100, gem(rtmix(400, par_true, nu), nu)))
-data.frame(true = par_true, mean_estimate = colMeans(est), sd = apply(est, 2, sd))
-```
-
-The estimates are centred at the true values (up to Monte Carlo error $\approx \text{sd}/\sqrt{100}$).
-
-## The test suite
-
-```{r}
-#| label: run-tests
-test_res <- testthat::test_file("tests/test-simple.R", reporter = "silent")
-res <- as.data.frame(test_res)[, c("test", "nb", "failed", "error")]
-res
-```
-
-**`r sum(res$nb)` expectations, `r sum(res$failed)` failures.**
+Two different algorithms agree on the estimate and on the log-likelihood.
 
 # Where is it slow?
 
-## Setup: a larger data set
-
-$N = 5000$ observations, so the time is spent on computation and not on overhead:
+## Profiling by function
 
 ```{r}
 #| label: prof-setup
+#| include: false
 set.seed(7)
 x_big <- rtmix(5000, par_true, nu)
 fit_big <- gem(x_big, nu)
 n_iter <- attr(fit_big, "iter")
-n_iter
-
 bm_fit <- bench::mark(gem(x_big, nu), iterations = 5)
-bm_fit[, c("median", "mem_alloc")]
-```
 
-One fit takes about **`r format(bm_fit$median)`** and `r n_iter` iterations. Where does the time go?
-
-## Profiling by function
-
-`Rprof` samples the call stack every 5 ms (here over 5 fits):
-
-```{r}
-#| label: prof-functions
 prof_file <- profile_expr(for (i in 1:5) gem(x_big, nu))
 prof <- summaryRprof(prof_file)
-our_funs <- dQuote(c("em_step", "e_step", "Q", "grad_Q", "dt_ls", "dt", "log", "sum"), FALSE)
-prof$by.total[rownames(prof$by.total) %in% our_funs, ]
 ```
 
-`total.pct`: share of samples where the function is *on* the stack. `self.pct`: share where it is the function *actually running*.
+A larger data set, $N = 5000$, so the time is spent on computation and not on overhead. One fit takes about **`r format(bm_fit$median)`** and `r n_iter` iterations. Where does the time go?
 
-. . .
+`Rprof` samples the call stack every 5 ms (here over 5 fits). Read the chart from the top: each box is a function, its **width** is its share of the run time, and the boxes below it are what it calls.
 
-- `Q()` is on the stack in about `r round(prof$by.total['"Q"', "total.pct"])`% of the time — but it is only called inside the GEM step.
-- `dt()` itself is running in about `r round(prof$by.self['"dt"', "self.pct"])`% of the time.
+```{r}
+#| label: plot-prof-functions
+#| echo: false
+#| fig-height: 3.3
+pt <- function(f, col) { v <- prof$by.total[dQuote(f, FALSE), col]; if (is.na(v)) 0 else v }
+Q_tot <- pt("Q", "total.pct"); Q_self <- pt("Q", "self.pct")
+E_tot <- pt("e_step", "total.pct"); E_self <- pt("e_step", "self.pct")
+flame <- data.frame(
+  label = c("gem(): one fit", "Q()", "e_step()", "", "dt()", "log(), sum()", "dt()"),
+  xmin  = c(0, 0, Q_tot, Q_tot + E_tot, 0, Q_tot - Q_self, Q_tot),
+  xmax  = c(100, Q_tot, Q_tot + E_tot, 100, Q_tot - Q_self, Q_tot, Q_tot + E_tot - E_self),
+  level = c(3, 2, 2, 2, 1, 1, 1),
+  kind  = c("driver", "Q", "e_step", "other", "dt", "Q", "dt")
+)
+flame$pct <- flame$xmax - flame$xmin
+flame$text <- ifelse(flame$pct >= 12, paste0(flame$label, "  ", round(flame$pct), "%"),
+                     ifelse(flame$pct >= 6, flame$label, ""))
+ggplot(flame) +
+  geom_rect(aes(xmin = xmin, xmax = xmax, ymin = level - 0.46, ymax = level + 0.46, fill = kind),
+            colour = "white", linewidth = 1) +
+  geom_text(aes(x = (xmin + xmax) / 2, y = level, label = text), size = ifelse(flame$pct < 12, 3.6, 4.8)) +
+  scale_fill_manual(values = c(driver = "grey85", Q = "#9ecae1", e_step = "#c7e9c0",
+                               other = "grey92", dt = "#f4a582"), guide = "none") +
+  scale_y_continuous(breaks = 1:3, labels = c("... which call", "... calls", "the fit")) +
+  scale_x_continuous(breaks = seq(0, 100, 25), expand = c(0.01, 0)) +
+  labs(x = "share of the run time (%)", y = NULL) +
+  theme(panel.grid = element_blank())
+```
 
-Interactively: `profvis::profvis(gem(x_big, nu))` (see `R/profiling-demo.R`).
+- `Q()` takes about `r round(prof$by.total['"Q"', "total.pct"])`% of the time, even though it is only a helper inside the GEM step.
+- Almost all of that is spent in `dt()`: in total `dt()` is running about `r round(prof$by.self['"dt"', "self.pct"])`% of the time.
+- The E-step is small in comparison, and the gradient is too cheap to show.
 
 ## Profiling by line
 
@@ -558,10 +368,12 @@ The line in `gem.R` that dominates is the call to `Q()` **inside the backtrackin
 
 ## Why? Number of calls × cost per call
 
+The profile says *where* the time goes. To see *why*, count how often each building block is called in one fit ($N = 5000$, `r n_iter` iterations) and time a single call with `bench::mark`:
+
 ```{r}
 #| label: prof-calls
+#| echo: false
 calls <- count_calls(gem(x_big, nu), c("e_step", "Q", "grad_Q", "dt_ls"))
-calls
 
 gam_big <- e_step(fit_big, x_big, nu)
 cost <- bench::mark(
@@ -571,17 +383,29 @@ cost <- bench::mark(
   dt_ls  = dt_ls(x_big, 0, 1, 5),
   check = FALSE
 )
-per_call <- setNames(as.numeric(cost$median), as.character(cost$expression))
-data.frame(
-  calls_per_fit = calls,
-  calls_per_iteration = round(calls / n_iter, 1),
-  ms_per_call = round(1000 * per_call[names(calls)], 3),
-  total_ms = round(1000 * calls * per_call[names(calls)]),
-  share_of_fit = paste0(round(100 * calls * per_call[names(calls)] / as.numeric(bm_fit$median)), "%")
+per_call <- setNames(as.numeric(cost$median), as.character(cost$expression))[names(calls)]
+total_ms <- 1000 * calls * per_call
+calls_tab <- data.frame(
+  fun   = paste0("`", names(calls), "()`"),
+  calls = formatC(calls, format = "d"),
+  per_iter = formatC(calls / n_iter, format = "f", digits = 1),
+  ms_call  = formatC(1000 * per_call, format = "f", digits = 2),
+  total    = formatC(total_ms, format = "f", digits = 0),
+  share    = paste0(round(100 * total_ms / (1000 * as.numeric(bm_fit$median))), "%")
+)
+calls_tab <- calls_tab[c(2, 1, 3, 4), ]
+calls_tab[1, ] <- paste0("**", calls_tab[1, ], "**")
+calls_tab$fun[4] <- paste0(calls_tab$fun[4], " *(inside `Q()` and `e_step()`)*")
+knitr::kable(
+  calls_tab, row.names = FALSE, align = c("l", "r", "r", "r", "r", "r"),
+  col.names = c("Function", "Calls per fit", "Calls per iteration", "Time per call (ms)",
+                "Total time (ms)", "Share of the fit")
 )
 ```
 
-(`dt_ls()` is called *inside* `e_step()` and `Q()`, so its row overlaps with theirs: 2 calls per E-step + 2 per $Q$.)
+- One call to `Q()` costs about the same as one E-step — but `Q()` is called **`r round(calls[["Q"]] / n_iter, 1)` times per iteration**, the E-step once.
+- `dt_ls()` is not an extra cost: it is the density inside `Q()` and `e_step()` (2 calls in each), so its row overlaps with theirs.
+- The gradient is almost free.
 
 ## Conclusion: three hotspots
 
@@ -610,7 +434,7 @@ source("R/load.R")
 
 **Observation:** $Q$ only needs **log**-densities,
 $$
-Q(\theta \mid \theta') = \sum_i \gamma_i \big(\log p + \log f_1(x_i)\big) + (1 - \gamma_i)\big(\log(1-p) + \log f_2(x_i)\big),
+Q(\theta \mid \hat\theta) = \sum_i \gamma_i \big(\log p + \log f_1(x_i)\big) + (1 - \gamma_i)\big(\log(1-p) + \log f_2(x_i)\big),
 $$
 but version 1 computes the density with `dt()` and then takes `log()` of it — a detour through the density scale.
 
@@ -692,35 +516,9 @@ Only what *differs* between the implementations is written twice.
 :::
 ::::
 
-## How an object is created
-
-In S3 a class is not a separate definition: an object is an ordinary **list with a class label**, made by a **constructor** function.
-
-::: {.small-code}
-```{r}
-#| eval: false
-#| code: !expr c(show_fun("new_tmix"), "", show_fun("tmix_density"), "", show_fun("tmix_log"))
-```
-:::
-
-```{r}
-#| label: s3-object
-m_log <- tmix_log(x, nu)
-class(m_log)
-str(unclass(m_log))
-m_log
-```
-
-The label `c("tmix_log", "tmix")` says: "I am a `tmix_log` — and where nothing more specific exists, a `tmix`". That is the inheritance.
-
 ## Generics, methods and dispatch
 
 A **generic** only dispatches; a **method** is an ordinary function named `generic.class`:
-
-```{r}
-#| eval: false
-#| code: !expr c(show_fun("loglik"), show_fun("e_step"), show_fun("Q"), show_fun("grad_Q"), show_fun("fit"))
-```
 
 | Generic | `tmix_density` | `tmix_log` |
 |---|---|---|
@@ -728,60 +526,44 @@ A **generic** only dispatches; a **method** is an ordinary function named `gener
 | `e_step()` | `e_step.tmix_density` | `e_step.tmix_log` |
 | `Q()` | `Q.tmix_density` | `Q.tmix_log` |
 | `grad_Q()` | `grad_Q.tmix` (inherited) | `grad_Q.tmix` (inherited) |
-| `fit()`, `print()` | `fit.tmix`, `print.tmix` (inherited) | `fit.tmix`, `print.tmix` (inherited) |
+| `fit()` | `fit.tmix` (inherited) | `fit.tmix` (inherited) | | `print()` | `print.tmix` (inherited) | `print.tmix` (inherited) |
 
-```{r}
-#| label: s3-methods
-methods(class = "tmix_log")
-methods(class = "tmix")
-```
-
-`e_step(m_log, par)`: R looks for `e_step.tmix_log` — found. `grad_Q(m_log, par, gam)`: no `grad_Q.tmix_log`, so R tries the next label and uses `grad_Q.tmix`.
-
-## The density class: version 1 as methods
-
-The code is the same as version 1 — only the data now come from the model object (`model$x`, `model$nu`):
-
-::: {.small-code}
-```{r}
-#| eval: false
-#| code: !expr c(show_fun("loglik.tmix_density"), "", show_fun("e_step.tmix_density"), "", show_fun("Q.tmix_density"))
-```
-:::
-
-## The log class
-
-::: {.small-code}
-```{r}
-#| eval: false
-#| code: !expr c(show_fun("ldt_ls"), "", show_fun("log_comp"), "", show_fun("loglik.tmix_log"), "", show_fun("e_step.tmix_log"), "", show_fun("Q.tmix_log"))
-```
-:::
-
-`ldt_ls()` and `log_comp()` are helper functions, not methods. `log_comp()` computes $a_i$ and $b_i$, which all three methods use.
 
 ## One GEM algorithm for both classes
 
-The GEM step only talks to the model through the generics:
+The GEM code only talks to the model through the generics (`e_step(model, par)`, `Q(model, par, gam)`, `grad_Q(model, par, gam)`), so the same `fit()` works for both classes.
 
-::: {.small-code}
-```{r}
-#| eval: false
-#| code: !expr c(show_fun("create_gem_step"), "", show_fun("fit.tmix"))
-```
-:::
-
-The only change from version 1: `e_step(par, x, nu)` becomes `e_step(model, par)`, and so on.
+Make the two models and fit them:
 
 ```{r}
 #| label: s3-fit
-rbind(density = fit(tmix_density(x, nu)),
-      log     = fit(tmix_log(x, nu)))
+model_d <- tmix_density(x, nu)   # density scale, dt()
+model_l <- tmix_log(x, nu)       # log scale
+
+rbind(density = fit(model_d),
+      log     = fit(model_l))
 ```
 
-## The same tests for both classes
+Same algorithm, same estimate — only the way the densities are computed differs.
 
-`tests/test-classes.R` loops over the two classes, so *every* check from the testing section runs for both. In addition it checks the two implementations against each other, and that the log scale survives an extreme outlier where the density scale underflows:
+## Do the two classes agree?
+
+The density class is the tested version 1, so the log class is tested against it:
+
+```{r}
+#| label: s3-agree
+par_test <- c(0.4, -0.5, 2.5, 1.3, 0.9)
+gam_test <- e_step(model_d, par0)
+
+test_that("the log class computes the same as the density class", {
+  expect_equal(loglik(model_l, par_test), loglik(model_d, par_test))
+  expect_equal(e_step(model_l, par_test), e_step(model_d, par_test))
+  expect_equal(Q(model_l, par_test, gam_test), Q(model_d, par_test, gam_test))
+  expect_equal(fit(model_l), fit(model_d), tolerance = 1e-8)
+})
+```
+
+A bonus of the log scale: it survives an extreme outlier where the density scale underflows to $0/0$:
 
 ```{r}
 #| label: s3-outlier
@@ -790,31 +572,19 @@ c(density = tail(e_step(tmix_density(x_out, nu), par_true), 1),
   log     = tail(e_step(tmix_log(x_out, nu), par_true), 1))
 ```
 
-```{r}
-#| label: s3-tests
-test_res2 <- testthat::test_file("tests/test-classes.R", reporter = "silent")
-res2 <- as.data.frame(test_res2)[, c("test", "nb", "failed", "error")]
-res2
-```
-
-**`r sum(res2$nb)` expectations, `r sum(res2$failed)` failures.**
-
 ## Is it faster?
 
-The same data as in the profiling ($N = 5000$). `check` makes `bench::mark` verify that both classes give the same estimate:
+The two classes timed with `bench::mark` on the data from the profiling ($N = 5000$). `bench::mark` also checks that both give the same estimate.
 
 ```{r}
 #| label: s3-bench
+#| echo: false
 model_density <- tmix_density(x_big, nu)
 model_log <- tmix_log(x_big, nu)
 same_fit <- function(a, b) isTRUE(all.equal(as.vector(a), as.vector(b), tolerance = 1e-8))
 bm_classes <- bench::mark(density = fit(model_density), log = fit(model_log),
                           check = same_fit, iterations = 10)
-bm_classes[, c("expression", "median", "mem_alloc")]
-```
 
-```{r}
-#| label: s3-blocks
 par_b <- fit(model_log)
 gam_b <- e_step(model_log, par_b)
 blocks <- bench::mark(
@@ -824,34 +594,153 @@ blocks <- bench::mark(
   check = FALSE
 )
 med <- setNames(1e6 * as.numeric(blocks$median), as.character(blocks$expression))
-data.frame(
-  density_us = round(med[c("Q_density", "e_step_density", "loglik_density")]),
-  log_us     = round(med[c("Q_log", "e_step_log", "loglik_log")]),
-  speed_up   = round(med[c("Q_density", "e_step_density", "loglik_density")] /
-                     med[c("Q_log", "e_step_log", "loglik_log")], 1),
-  row.names  = c("Q", "e_step", "loglik")
+
+ms_density <- c(1000 * as.numeric(bm_classes$median[1]), med[c("Q_density", "e_step_density", "loglik_density")] / 1000)
+ms_log     <- c(1000 * as.numeric(bm_classes$median[2]), med[c("Q_log", "e_step_log", "loglik_log")] / 1000)
+fmt_ms <- function(v) ifelse(v >= 10, formatC(v, format = "f", digits = 0), formatC(v, format = "f", digits = 2))
+faster_tab <- data.frame(
+  what    = c("Whole fit", "One call to `Q()`", "One call to `e_step()`", "One call to `loglik()`"),
+  density = fmt_ms(ms_density),
+  log     = fmt_ms(ms_log),
+  speed   = paste0(formatC(ms_density / ms_log, format = "f", digits = 1), " ×")
+)
+faster_tab[1, ] <- paste0("**", faster_tab[1, ], "**")
+knitr::kable(
+  faster_tab, row.names = FALSE, align = c("l", "r", "r", "r"),
+  col.names = c("", "`tmix_density` (ms)", "`tmix_log` (ms)", "Speed-up")
 )
 ```
 
-The whole fit is **`r round(as.numeric(bm_classes$median[1] / bm_classes$median[2]), 1)` times faster** on log scale, with the same estimate and the same number of iterations — because $Q$, which dominated the profile, got the largest speed-up.
+- The whole fit is **`r round(as.numeric(bm_classes$median[1] / bm_classes$median[2]), 1)` times faster** on log scale, with the same estimate and the same number of iterations.
+- `Q()` got the largest speed-up — and `Q()` was what dominated the profile.
 
 ## Where is the time now?
 
-Profiling the log class in the same way:
+Profiling the log class in the same way as before, and counting the calls again:
 
 ```{r}
 #| label: s3-profile
+#| echo: false
 prof_file_log <- profile_expr(for (i in 1:15) fit(model_log))
 prof_log <- summaryRprof(prof_file_log)
-our_funs_log <- dQuote(c("em_step", "Q.tmix_log", "log_comp", "ldt_ls", "e_step.tmix_log",
-                         "grad_Q.tmix", "plogis"), FALSE)
-prof_log$by.total[rownames(prof_log$by.total) %in% our_funs_log, ]
-
 calls_log <- count_calls(fit(model_log), c("e_step", "Q", "grad_Q"))
-calls_log
+
+share <- function(p, f) { v <- p$by.total[dQuote(f, FALSE), "total.pct"]; if (is.na(v)) 0 else v }
+now_tab <- data.frame(
+  fun = c("`Q()`", "`e_step()`", "`grad_Q()`"),
+  calls_before = formatC(calls[c("Q", "e_step", "grad_Q")], format = "d"),
+  calls_now    = formatC(calls_log[c("Q", "e_step", "grad_Q")], format = "d"),
+  share_before = paste0(round(c(share(prof, "Q"), share(prof, "e_step"), share(prof, "grad_Q"))), "%"),
+  share_now    = paste0(round(c(share(prof_log, "Q.tmix_log"), share(prof_log, "e_step.tmix_log"),
+                                share(prof_log, "grad_Q.tmix"))), "%")
+)
+now_tab[1, ] <- paste0("**", now_tab[1, ], "**")
+knitr::kable(
+  now_tab, row.names = FALSE, align = c("l", "r", "r", "r", "r"),
+  col.names = c("Function", "Calls per fit, density", "Calls per fit, log",
+                "Share of time, density", "Share of time, log")
+)
 ```
 
 - Each call to $Q$ is now much cheaper, but there are still **`r calls_log[["Q"]]` calls** per fit — the log scale changed the cost per call, not the number of calls.
 - So $Q$ in the line search is still about `r round(prof_log$by.total['"Q.tmix_log"', "total.pct"])`% of the time, now spent in `log1p()` inside `ldt_ls()` instead of in `dt()`.
 
-[The profile pointed at `dt()`, and the log scale removed it: $Q$ became `r round(med[["Q_density"]] / med[["Q_log"]])` times cheaper, the whole fit `r round(as.numeric(bm_classes$median[1] / bm_classes$median[2]))` times faster, and the answer is the same. The S3 design made the comparison fair: one GEM algorithm and one test suite for both implementations. The next hotspot is hotspot 1 — the number of $Q$ evaluations in the line search.]{.lesson}
+[The profile pointed at `dt()`, and the log scale removed it: $Q$ became `r round(med[["Q_density"]] / med[["Q_log"]])` times cheaper, the whole fit `r round(as.numeric(bm_classes$median[1] / bm_classes$median[2]))` times faster, and the answer is the same. The S3 design made the comparison fair: one GEM algorithm for both implementations. The next hotspot is hotspot 1 — the number of $Q$ evaluations in the line search.]{.lesson}
+
+# How good is it? Benchmark against R's optimizers
+
+## The competitors
+
+R has several general-purpose optimizers. They do not use the EM idea: they maximize the observed log-likelihood $\ell(\theta)$ directly.
+
+| Method | Function | Type |
+|---|---|---|
+| GEM | `fit()` (ours) | E-step + one gradient step on $Q$ with backtracking |
+| BFGS | `optim(method = "BFGS")` | quasi-Newton |
+| L-BFGS-B | `optim(method = "L-BFGS-B")` | quasi-Newton, limited memory |
+| CG | `optim(method = "CG")` | conjugate gradient |
+| Nelder-Mead | `optim(method = "Nelder-Mead")` | simplex, uses no gradient |
+| nlminb | `nlminb()` | quasi-Newton (PORT library) |
+
+## Do they all find the same maximum?
+
+On the data from the profiling ($N = 5000$), all started at `default_start()`:
+
+```{r}
+#| label: methods-accuracy
+#| echo: false
+methods <- list(
+  GEM           = function(m) fit(m),
+  BFGS          = function(m) fit_optim(m, "BFGS"),
+  `L-BFGS-B`    = function(m) fit_optim(m, "L-BFGS-B"),
+  CG            = function(m) fit_optim(m, "CG"),
+  `Nelder-Mead` = function(m) fit_optim(m, "Nelder-Mead"),
+  nlminb        = function(m) fit_nlminb(m)
+)
+fits <- lapply(methods, function(f) f(model_log))
+ll <- sapply(fits, function(p) loglik(model_log, p))
+max_tab <- data.frame(
+  method = names(fits),
+  formatC(t(sapply(fits, as.vector)), format = "f", digits = 4),
+  evals  = formatC(sapply(fits, attr, "iter"), format = "d"),
+  gap    = ifelse(max(ll) - ll == 0, "0", formatC(max(ll) - ll, format = "e", digits = 1))
+)
+max_tab$method[1] <- "**GEM (ours)**"
+knitr::kable(
+  max_tab, row.names = FALSE, align = c("l", rep("r", 7)),
+  col.names = c("Method", "$p$", "$\\mu_1$", "$\\mu_2$", "$\\sigma_1$", "$\\sigma_2$",
+                "Evaluations", "Distance to best $\\ell$")
+)
+```
+
+Evaluations: iterations for the GEM, function evaluations for the others. The last column is the distance to the best log-likelihood found.
+
+## `bench::press`: time as a function of $N$
+
+```{r}
+#| label: press-methods
+#| echo: false
+press <- bench::press(N = c(500, 2000, 8000, 32000), {
+  set.seed(1)
+  model <- tmix_log(rtmix(N, par_true, nu), nu)
+  bench::mark(
+    GEM           = fit(model),
+    BFGS          = fit_optim(model, "BFGS"),
+    `L-BFGS-B`    = fit_optim(model, "L-BFGS-B"),
+    CG            = fit_optim(model, "CG"),
+    `Nelder-Mead` = fit_optim(model, "Nelder-Mead"),
+    nlminb        = fit_nlminb(model),
+    check = FALSE, min_iterations = 3
+  )
+})
+```
+
+```{r}
+#| label: plot-press-methods
+#| echo: false
+#| fig-height: 3.6
+press_df <- data.frame(method = as.character(press$expression), N = press$N,
+                       ms = 1000 * as.numeric(press$median))
+ggplot(press_df, aes(N, ms, colour = method)) +
+  geom_line(linewidth = 0.9) + geom_point(size = 2) +
+  scale_x_log10(breaks = unique(press_df$N)) + scale_y_log10() +
+  labs(y = "median time (ms)", colour = NULL)
+```
+
+## The same numbers as a table
+
+```{r}
+#| label: press-table
+#| echo: false
+tab <- reshape(press_df, idvar = "method", timevar = "N", direction = "wide")
+names(tab) <- sub("ms\\.", "N = ", names(tab))
+tab[order(tab[[ncol(tab)]]), ] |> transform(method = method) |>
+  (\(d) { d[-1] <- round(d[-1], 1); rownames(d) <- NULL; d })()
+```
+
+Median time in ms, sorted by the time for the largest $N$.
+
+- **The methods scale linearly in $N$** (parallel lines): they spend their time on passes over the data, and the number of passes hardly depends on $N$. The exception is CG, which is erratic: the number of evaluations it needs varies a lot from data set to data set.
+- **The quasi-Newton methods are fastest.** They use curvature information and need few evaluations of $\ell$.
+- **The GEM is clearly slower than the quasi-Newton methods.** It converges linearly, and each iteration costs about `r round(calls_log[["Q"]] / n_iter)` evaluations of $Q$ in the line search — hotspot 1 from the profile.
+- **Nelder-Mead is slowest of the stable methods**: it uses no gradient and needs hundreds of evaluations.

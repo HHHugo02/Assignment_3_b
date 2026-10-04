@@ -33,6 +33,6 @@ create_gem_step <- function(model, step0 = 1, d = 0.5, c = 0.1) {
 fit <- function(model, ...) UseMethod("fit")
 
 # Shared method: fit any "tmix" model with the GEM algorithm
-fit.tmix <- function(model, par0 = default_start(model$x), ...) {
-  em(par0, create_gem_step(model), ...)
+fit.tmix <- function(model, par0 = default_start(model$x), eps = 1e-10, maxit = 1000) {
+  em(par0, create_gem_step(model), eps, maxit)
 }
