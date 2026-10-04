@@ -1,9 +1,10 @@
 library(testthat)
 
+# Tests for version 1 (plain functions)
 if (!exists("gem", mode = "function")) {
-  root <- if (file.exists("R/load.R")) "." else ".."
+  root <- if (file.exists("R/load-v1.R")) "." else ".."
   owd <- setwd(root)
-  source("R/load.R")
+  source("R/load-v1.R")
   setwd(owd)
 }
 

@@ -16,20 +16,33 @@ robustness study, ...) is kept in `old/`.
 
 | File | Content |
 |------|---------|
-| `R/tmix-simple.R` | t-density, mixture density, simulation, log-likelihood, E-step, `Q()`, `grad_Q()` |
-| `R/gem.R` | the GEM step (`create_gem_step()`), the EM driver `em()` and `gem()` |
+| `R/tmix-common.R` | shared basics: t-density, mixture density, simulation, starting value |
+| `R/em.R` | the EM driver `em()` (shared) |
+| `R/tmix-simple.R` | version 1: log-likelihood, E-step, `Q()`, `grad_Q()` as plain functions |
+| `R/gem.R` | version 1: the GEM step (`create_gem_step(x, nu)`) and `gem()` |
+| `R/tmix-classes.R` | version 2: S3 classes `tmix` (parent), `tmix_density` and `tmix_log` |
+| `R/gem-classes.R` | version 2: the GEM step for any `tmix` model and `fit()` |
 | `R/profiling-tools.R` | `count_calls()`, `profile_expr()`, `profile_lines()` |
 | `R/profiling-demo.R` | interactive `profvis` demo for the exam |
-| `tests/test-simple.R` | testthat tests |
+| `tests/test-simple.R` | tests for version 1 |
+| `tests/test-classes.R` | tests for version 2 (each check runs for both classes) |
 
 ## Run
 
-From this folder in R:
+From this folder in R. Version 2 (S3 classes):
 
 ```r
 source("R/load.R")
-testthat::test_file("tests/test-simple.R")
+testthat::test_file("tests/test-classes.R")
 x <- rtmix(400, c(0.6, 0, 3, 1, 0.7), c(5, 10))
+fit(tmix_log(x, c(5, 10)))
+fit(tmix_density(x, c(5, 10)))
+```
+
+Version 1 (plain functions, used in the first part of the presentation):
+
+```r
+source("R/load-v1.R")
 gem(x, c(5, 10))
 ```
 

@@ -1098,6 +1098,7 @@ margin-right: 0; }
 <li><strong>A simple implementation</strong> — the formulas coded directly, on the density scale, with R’s <code>dt()</code></li>
 <li><strong>Is it correct?</strong> — checks against theory, numerical derivatives, simulation and R packages (<code>teigen</code>, <code>mclust</code>)</li>
 <li><strong>Where is it slow?</strong> — profiling with <code>Rprof</code> and <code>profvis</code></li>
+<li><strong>A faster implementation</strong> — a log-scale version, and an S3 design with two classes so the two implementations share the same GEM code and tests</li>
 </ol>
 <p>Throughout: <span class="lesson">boxes like this one</span> mark what I learned along the way.</p>
 </section>
@@ -1734,10 +1735,10 @@ Figure 5
 <pre><code>#&gt; # A tibble: 1 × 2
 #&gt;     median mem_alloc
 #&gt;   &lt;bch:tm&gt; &lt;bch:byt&gt;
-#&gt; 1    660ms    78.7MB</code></pre>
+#&gt; 1    683ms    78.7MB</code></pre>
 </div>
 </div>
-<p>One fit takes about <strong>660ms</strong> and 30 iterations. Where does the time go?</p>
+<p>One fit takes about <strong>683ms</strong> and 30 iterations. Where does the time go?</p>
 </section>
 <section id="profiling-by-function" class="slide level2">
 <h2>Profiling by function</h2>
@@ -1749,20 +1750,18 @@ Figure 5
 <span id="cb44-4"><a href></a>prof<span class="sc">$</span>by.total[<span class="fu">rownames</span>(prof<span class="sc">$</span>by.total) <span class="sc">%in%</span> our_funs, ]</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
 <div class="cell-output cell-output-stdout">
 <pre><code>#&gt;           total.time total.pct self.time self.pct
-#&gt; &quot;em_step&quot;      1.110     99.55     0.010     0.90
-#&gt; &quot;Q&quot;            0.960     86.10     0.165    14.80
-#&gt; &quot;dt_ls&quot;        0.890     79.82     0.005     0.45
-#&gt; &quot;dt&quot;           0.885     79.37     0.885    79.37
-#&gt; &quot;e_step&quot;       0.100      8.97     0.000     0.00
-#&gt; &quot;grad_Q&quot;       0.040      3.59     0.040     3.59
-#&gt; &quot;sum&quot;          0.005      0.45     0.005     0.45</code></pre>
+#&gt; &quot;em_step&quot;      1.115     99.55     0.000     0.00
+#&gt; &quot;Q&quot;            1.040     92.86     0.130    11.61
+#&gt; &quot;dt_ls&quot;        0.985     87.95     0.015     1.34
+#&gt; &quot;dt&quot;           0.970     86.61     0.970    86.61
+#&gt; &quot;e_step&quot;       0.075      6.70     0.000     0.00</code></pre>
 </div>
 </div>
 <p><code>total.pct</code>: share of samples where the function is <em>on</em> the stack. <code>self.pct</code>: share where it is the function <em>actually running</em>.</p>
 <div class="fragment">
 <ul>
-<li><code>Q()</code> is on the stack in about 86% of the time — but it is only called inside the GEM step.</li>
-<li><code>dt()</code> itself is running in about 79% of the time.</li>
+<li><code>Q()</code> is on the stack in about 93% of the time — but it is only called inside the GEM step.</li>
+<li><code>dt()</code> itself is running in about 87% of the time.</li>
 </ul>
 <p>Interactively: <code>profvis::profvis(gem(x_big, nu))</code> (see <code>R/profiling-demo.R</code>).</p>
 </div>
@@ -1774,14 +1773,14 @@ Figure 5
 <div class="code-copy-outer-scaffold"><div class="sourceCode cell-code" id="cb46"><pre class="sourceCode numberSource r number-lines code-with-copy"><code class="sourceCode r"><span id="cb46-1"><a href></a><span class="fu">profile_lines</span>(prof_file)</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
 <div class="cell-output cell-output-stdout">
 <pre><code>#&gt;               line     in_function                                          code total.pct self.pct
-#&gt; 1         gem.R#40              em                           par &lt;- em_step(par)     99.55     0.00
-#&gt; 2         gem.R#57             gem         em(par0, create_gem_step(x, nu), ...)     99.55     0.00
-#&gt; 3 tmix-simple.R#48               Q                                          sum(     86.10    15.25
-#&gt; 4 tmix-simple.R#12           dt_ls         dt((x - mu) / sigma, df = nu) / sigma     79.82    79.82
-#&gt; 5         gem.R#22 create_gem_step       if (par_new[4] &gt; 0 &amp;&amp; par_new[5] &gt; 0 &amp;&amp;     78.48     0.00
-#&gt; 6         gem.R#12 create_gem_step            gam &lt;- e_step(par, x, nu) # E-step      8.97     0.00
-#&gt; 7         gem.R#17 create_gem_step                   Q_old &lt;- Q(par, gam, x, nu)      7.62     0.00
-#&gt; 8 tmix-simple.R#41          e_step a &lt;- par[1] * dt_ls(x, par[2], par[4], nu[1])      4.93     0.00</code></pre>
+#&gt; 1           em.R#9              em                           par &lt;- em_step(par)     99.55     0.00
+#&gt; 2         gem.R#37             gem         em(par0, create_gem_step(x, nu), ...)     99.55     0.00
+#&gt; 3 tmix-simple.R#20               Q                                          sum(     92.86    11.61
+#&gt; 4 tmix-common.R#13           dt_ls         dt((x - mu) / sigma, df = nu) / sigma     87.95    87.95
+#&gt; 5         gem.R#22 create_gem_step       if (par_new[4] &gt; 0 &amp;&amp; par_new[5] &gt; 0 &amp;&amp;     81.70     0.00
+#&gt; 6         gem.R#17 create_gem_step                   Q_old &lt;- Q(par, gam, x, nu)     11.16     0.00
+#&gt; 7         gem.R#12 create_gem_step            gam &lt;- e_step(par, x, nu) # E-step      6.70     0.00
+#&gt; 8 tmix-simple.R#13          e_step a &lt;- par[1] * dt_ls(x, par[2], par[4], nu[1])      4.02     0.00</code></pre>
 </div>
 </div>
 <p>The line in <code>gem.R</code> that dominates is the call to <code>Q()</code> <strong>inside the backtracking loop</strong>. Inside <code>Q()</code> and <code>e_step()</code>, the time is spent in <code>dt_ls()</code>, i.e. in <code>dt()</code>.</p>
@@ -1813,10 +1812,10 @@ Figure 5
 <span id="cb50-16"><a href></a>)</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
 <div class="cell-output cell-output-stdout">
 <pre><code>#&gt;        calls_per_fit calls_per_iteration ms_per_call total_ms share_of_fit
-#&gt; e_step            30                 1.0       1.632       49           7%
-#&gt; Q                322                10.7       1.890      609          92%
-#&gt; grad_Q            30                 1.0       0.086        3           0%
-#&gt; dt_ls            704                23.5       0.795      560          85%</code></pre>
+#&gt; e_step            30                 1.0       1.691       51           7%
+#&gt; Q                322                10.7       1.892      609          89%
+#&gt; grad_Q            30                 1.0       0.084        3           0%
+#&gt; dt_ls            704                23.5       0.779      549          80%</code></pre>
 </div>
 </div>
 <p>(<code>dt_ls()</code> is called <em>inside</em> <code>e_step()</code> and <code>Q()</code>, so its row overlaps with theirs: 2 calls per E-step + 2 per <span class="math inline">\(Q\)</span>.)</p>
@@ -1830,7 +1829,7 @@ Figure 5
 </ol>
 <p><span class="lesson">The profile is dominated by one line (the <span class="math inline">\(Q\)</span> call in the line search) and one primitive (<code>dt()</code>). Counting calls and timing each building block explains <em>why</em>: total time ≈ number of calls × cost per call.</span></p>
 <aside class="notes">
-<p>Next steps (next part of the presentation): investigate each hotspot, compare the density-scale implementation with a log-scale implementation (plogis / log-sum-exp), and restructure the code with OOP so the two implementations can be benchmarked against each other with shared methods.</p>
+<p>Transition: hotspot 2 (dt) is attacked next with a log-scale implementation. Hotspot 1 (the number of Q calls) is still there afterwards, which the new profile at the end shows.</p>
 <style type="text/css">
 span.MJX_Assistive_MathML {
 position:absolute!important;
@@ -1842,6 +1841,442 @@ width: 1px!important;
 overflow: hidden!important;
 display:block!important;
 }</style></aside>
+</section></section>
+<section>
+<section id="a-faster-implementation-the-log-scale" class="title-slide slide level1 center">
+<h1>A faster implementation: the log scale</h1>
+
+</section>
+<section id="from-the-profile-to-a-plan" class="slide level2">
+<h2>From the profile to a plan</h2>
+<p><strong>What the profile showed:</strong> <code>Q()</code> takes 93% of the time, and <code>dt()</code> alone 87%.</p>
+<p><strong>Observation:</strong> <span class="math inline">\(Q\)</span> only needs <strong>log</strong>-densities, <span class="math display">\[
+Q(\theta \mid \theta&#39;) = \sum_i \gamma_i \big(\log p + \log f_1(x_i)\big) + (1 - \gamma_i)\big(\log(1-p) + \log f_2(x_i)\big),
+\]</span> but version 1 computes the density with <code>dt()</code> and then takes <code>log()</code> of it — a detour through the density scale.</p>
+<div class="fragment">
+<p><strong>Idea:</strong> write the log-density out and compute it directly, <span class="math display">\[
+\log f(x) = \underbrace{\log\Gamma\big(\tfrac{\nu+1}{2}\big) - \log\Gamma\big(\tfrac{\nu}{2}\big) - \tfrac12\log(\pi\nu)}_{c(\nu)\text{: a constant, computed once}} - \log\sigma - \tfrac{\nu+1}{2}\log\Big(1 + \tfrac{(x-\mu)^2}{\nu\sigma^2}\Big).
+\]</span> With <span class="math inline">\(a_i = \log p + \log f_1(x_i)\)</span> and <span class="math inline">\(b_i = \log(1-p) + \log f_2(x_i)\)</span>:</p>
+<table class="caption-top">
+<colgroup>
+<col style="width: 33%">
+<col style="width: 33%">
+<col style="width: 33%">
+</colgroup>
+<thead>
+<tr class="header">
+<th>Building block</th>
+<th>Version 1 (density scale)</th>
+<th>Log scale</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td><span class="math inline">\(Q\)</span></td>
+<td><code>log(p * dt(...))</code>, twice per point</td>
+<td><span class="math inline">\(\sum_i \gamma_i a_i + (1-\gamma_i) b_i\)</span> — no <code>dt()</code>, no <code>log()</code></td>
+</tr>
+<tr class="even">
+<td>E-step</td>
+<td><span class="math inline">\(\gamma_i = \frac{p f_1}{p f_1 + (1-p) f_2}\)</span></td>
+<td><span class="math inline">\(\gamma_i = \frac{1}{1 + e^{b_i - a_i}}\)</span> = <code>plogis(a - b)</code></td>
+</tr>
+<tr class="odd">
+<td>log-likelihood</td>
+<td><code>sum(log(dtmix(...)))</code></td>
+<td><span class="math inline">\(\log(e^{a_i} + e^{b_i})\)</span> with the log-sum-exp trick</td>
+</tr>
+</tbody>
+</table>
+</div>
+<div class="fragment">
+<p><strong>To compare the two fairly</strong> they must run through the <em>same</em> GEM code and the <em>same</em> tests. So the code is restructured with S3: one class per implementation, and everything they share in a common parent class.</p>
+</div>
+</section>
+<section id="the-s3-design-two-classes-with-a-common-parent" class="slide level2">
+<h2>The S3 design: two classes with a common parent</h2>
+<div class="columns">
+<div class="column" style="width:48%;">
+<svg viewbox="0 0 520 400" style="width: 100%; max-width: 540px;" xmlns="http://www.w3.org/2000/svg" font-family="monospace" font-size="15" role="img" aria-label="Class diagram: tmix is the parent of tmix_density and tmix_log">
+  <g stroke="#2c7fb8" stroke-width="1.5" fill="white">
+    <rect x="150" y="8" width="220" height="150" />
+    <rect x="150" y="8" width="220" height="32" fill="#dcebf7" />
+    <line x1="150" y1="92" x2="370" y2="92"></line>
+    <rect x="8" y="230" width="230" height="162" />
+    <rect x="8" y="230" width="230" height="32" fill="#dcebf7" />
+    <line x1="8" y1="294" x2="238" y2="294"></line>
+    <rect x="282" y="230" width="230" height="162" />
+    <rect x="282" y="230" width="230" height="32" fill="#dcebf7" />
+    <line x1="282" y1="294" x2="512" y2="294"></line>
+    <polyline points="123,230 123,200 215,200 215,172" fill="none"></polyline>
+    <polygon points="215,158 207,172 223,172"></polygon>
+    <polyline points="397,230 397,200 305,200 305,172" fill="none"></polyline>
+    <polygon points="305,158 297,172 313,172"></polygon>
+  </g>
+  <g fill="#222">
+    <text x="260" y="30" text-anchor="middle" font-weight="bold">tmix</text>
+    <text x="162" y="62">x   (data)</text>
+    <text x="162" y="82">nu  (shape parameters)</text>
+    <text x="162" y="114">grad_Q()</text>
+    <text x="162" y="132">fit()</text>
+    <text x="162" y="150">print()</text>
+    <text x="123" y="252" text-anchor="middle" font-weight="bold">tmix_density</text>
+    <text x="20" y="282" fill="#777">(no extra fields)</text>
+    <text x="20" y="316">loglik()</text>
+    <text x="20" y="334">e_step()</text>
+    <text x="20" y="352">Q()</text>
+    <text x="20" y="380" fill="#2c7fb8">density scale: dt()</text>
+    <text x="397" y="252" text-anchor="middle" font-weight="bold">tmix_log</text>
+    <text x="294" y="282">log_const  (= c(nu))</text>
+    <text x="294" y="316">loglik()</text>
+    <text x="294" y="334">e_step()</text>
+    <text x="294" y="352">Q()</text>
+    <text x="294" y="380" fill="#2c7fb8">log scale: log1p()</text>
+  </g>
+</svg>
+</div><div class="column" style="width:52%;">
+<p><strong><code>tmix</code></strong> (parent) holds what is the same for both:</p>
+<ul>
+<li>the data <code>x</code> and the shape parameters <code>nu</code></li>
+<li><code>grad_Q()</code>: the gradient is the same formula</li>
+<li><code>fit()</code>: the GEM algorithm</li>
+<li><code>print()</code></li>
+</ul>
+<p><strong><code>tmix_density</code></strong>: version 1 — <code>loglik()</code>, <code>e_step()</code> and <code>Q()</code> with <code>dt()</code>.</p>
+<p><strong><code>tmix_log</code></strong>: the same three methods on log scale, plus the constant <span class="math inline">\(c(\nu)\)</span> stored in the object.</p>
+<p>Only what <em>differs</em> between the implementations is written twice.</p>
+</div></div>
+</section>
+<section id="how-an-object-is-created" class="slide level2">
+<h2>How an object is created</h2>
+<p>In S3 a class is not a separate definition: an object is an ordinary <strong>list with a class label</strong>, made by a <strong>constructor</strong> function.</p>
+<div class="small-code">
+<div class="cell" data-layout-align="center">
+<div class="code-copy-outer-scaffold"><div class="sourceCode cell-code" id="cb52"><pre class="sourceCode numberSource r number-lines code-with-copy"><code class="sourceCode r"><span id="cb52-1"><a href></a>new_tmix <span class="ot">&lt;-</span> <span class="cf">function</span>(x, nu, subclass, ...) {</span>
+<span id="cb52-2"><a href></a>  <span class="fu">stopifnot</span>(<span class="fu">is.numeric</span>(x), <span class="fu">length</span>(nu) <span class="sc">==</span> <span class="dv">2</span>, <span class="fu">all</span>(nu <span class="sc">&gt;</span> <span class="dv">0</span>))</span>
+<span id="cb52-3"><a href></a>  <span class="fu">structure</span>(<span class="fu">list</span>(<span class="at">x =</span> x, <span class="at">nu =</span> nu, ...), <span class="at">class =</span> <span class="fu">c</span>(subclass, <span class="st">&quot;tmix&quot;</span>))</span>
+<span id="cb52-4"><a href></a>}</span>
+<span id="cb52-5"><a href></a></span>
+<span id="cb52-6"><a href></a>tmix_density <span class="ot">&lt;-</span> <span class="cf">function</span>(x, nu) <span class="fu">new_tmix</span>(x, nu, <span class="st">&quot;tmix_density&quot;</span>)</span>
+<span id="cb52-7"><a href></a></span>
+<span id="cb52-8"><a href></a>tmix_log <span class="ot">&lt;-</span> <span class="cf">function</span>(x, nu) {</span>
+<span id="cb52-9"><a href></a>  <span class="co"># log of the normalizing constant Gamma((nu + 1) / 2) / (Gamma(nu / 2) sqrt(pi nu)),</span></span>
+<span id="cb52-10"><a href></a>  <span class="co"># computed once here instead of in every call</span></span>
+<span id="cb52-11"><a href></a>  log_const <span class="ot">&lt;-</span> <span class="fu">lgamma</span>((nu <span class="sc">+</span> <span class="dv">1</span>) <span class="sc">/</span> <span class="dv">2</span>) <span class="sc">-</span> <span class="fu">lgamma</span>(nu <span class="sc">/</span> <span class="dv">2</span>) <span class="sc">-</span> <span class="fl">0.5</span> <span class="sc">*</span> <span class="fu">log</span>(pi <span class="sc">*</span> nu)</span>
+<span id="cb52-12"><a href></a>  <span class="fu">new_tmix</span>(x, nu, <span class="st">&quot;tmix_log&quot;</span>, <span class="at">log_const =</span> log_const)</span>
+<span id="cb52-13"><a href></a>}</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+</div>
+</div>
+<div class="cell" data-layout-align="center">
+<div class="code-copy-outer-scaffold"><div class="sourceCode cell-code" id="cb53"><pre class="sourceCode numberSource r number-lines code-with-copy"><code class="sourceCode r"><span id="cb53-1"><a href></a>m_log <span class="ot">&lt;-</span> <span class="fu">tmix_log</span>(x, nu)</span>
+<span id="cb53-2"><a href></a><span class="fu">class</span>(m_log)</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<div class="cell-output cell-output-stdout">
+<pre><code>#&gt; [1] &quot;tmix_log&quot; &quot;tmix&quot;</code></pre>
+</div>
+<div class="code-copy-outer-scaffold"><div class="sourceCode cell-code" id="cb55"><pre class="sourceCode numberSource r number-lines code-with-copy"><code class="sourceCode r"><span id="cb55-1"><a href></a><span class="fu">str</span>(<span class="fu">unclass</span>(m_log))</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<div class="cell-output cell-output-stdout">
+<pre><code>#&gt; List of 3
+#&gt;  $ x        : num [1:400] 3.06 2.61 -2.6 2.7 2.93 ...
+#&gt;  $ nu       : num [1:2] 5 10
+#&gt;  $ log_const: num [1:2] -0.969 -0.944</code></pre>
+</div>
+<div class="code-copy-outer-scaffold"><div class="sourceCode cell-code" id="cb57"><pre class="sourceCode numberSource r number-lines code-with-copy"><code class="sourceCode r"><span id="cb57-1"><a href></a>m_log</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<div class="cell-output cell-output-stdout">
+<pre><code>#&gt; Two-component t-mixture model, implementation: tmix_log
+#&gt; N = 400, nu = (5, 10)</code></pre>
+</div>
+</div>
+<p>The label <code>c(&quot;tmix_log&quot;, &quot;tmix&quot;)</code> says: “I am a <code>tmix_log</code> — and where nothing more specific exists, a <code>tmix</code>”. That is the inheritance.</p>
+</section>
+<section id="generics-methods-and-dispatch" class="slide level2">
+<h2>Generics, methods and dispatch</h2>
+<p>A <strong>generic</strong> only dispatches; a <strong>method</strong> is an ordinary function named <code>generic.class</code>:</p>
+<div class="cell" data-layout-align="center">
+<div class="code-copy-outer-scaffold"><div class="sourceCode cell-code" id="cb59"><pre class="sourceCode numberSource r number-lines code-with-copy"><code class="sourceCode r"><span id="cb59-1"><a href></a>loglik <span class="ot">&lt;-</span> <span class="cf">function</span>(model, par) <span class="fu">UseMethod</span>(<span class="st">&quot;loglik&quot;</span>)</span>
+<span id="cb59-2"><a href></a>e_step <span class="ot">&lt;-</span> <span class="cf">function</span>(model, par) <span class="fu">UseMethod</span>(<span class="st">&quot;e_step&quot;</span>)</span>
+<span id="cb59-3"><a href></a>Q <span class="ot">&lt;-</span> <span class="cf">function</span>(model, par, gam) <span class="fu">UseMethod</span>(<span class="st">&quot;Q&quot;</span>)</span>
+<span id="cb59-4"><a href></a>grad_Q <span class="ot">&lt;-</span> <span class="cf">function</span>(model, par, gam) <span class="fu">UseMethod</span>(<span class="st">&quot;grad_Q&quot;</span>)</span>
+<span id="cb59-5"><a href></a>fit <span class="ot">&lt;-</span> <span class="cf">function</span>(model, ...) <span class="fu">UseMethod</span>(<span class="st">&quot;fit&quot;</span>)</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+</div>
+<table class="caption-top">
+<colgroup>
+<col style="width: 33%">
+<col style="width: 33%">
+<col style="width: 33%">
+</colgroup>
+<thead>
+<tr class="header">
+<th>Generic</th>
+<th><code>tmix_density</code></th>
+<th><code>tmix_log</code></th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td><code>loglik()</code></td>
+<td><code>loglik.tmix_density</code></td>
+<td><code>loglik.tmix_log</code></td>
+</tr>
+<tr class="even">
+<td><code>e_step()</code></td>
+<td><code>e_step.tmix_density</code></td>
+<td><code>e_step.tmix_log</code></td>
+</tr>
+<tr class="odd">
+<td><code>Q()</code></td>
+<td><code>Q.tmix_density</code></td>
+<td><code>Q.tmix_log</code></td>
+</tr>
+<tr class="even">
+<td><code>grad_Q()</code></td>
+<td><code>grad_Q.tmix</code> (inherited)</td>
+<td><code>grad_Q.tmix</code> (inherited)</td>
+</tr>
+<tr class="odd">
+<td><code>fit()</code>, <code>print()</code></td>
+<td><code>fit.tmix</code>, <code>print.tmix</code> (inherited)</td>
+<td><code>fit.tmix</code>, <code>print.tmix</code> (inherited)</td>
+</tr>
+</tbody>
+</table>
+<div class="cell" data-layout-align="center">
+<div class="code-copy-outer-scaffold"><div class="sourceCode cell-code" id="cb60"><pre class="sourceCode numberSource r number-lines code-with-copy"><code class="sourceCode r"><span id="cb60-1"><a href></a><span class="fu">methods</span>(<span class="at">class =</span> <span class="st">&quot;tmix_log&quot;</span>)</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<div class="cell-output cell-output-stdout">
+<pre><code>#&gt; [1] e_step loglik Q     
+#&gt; see &#39;?methods&#39; for accessing help and source code</code></pre>
+</div>
+<div class="code-copy-outer-scaffold"><div class="sourceCode cell-code" id="cb62"><pre class="sourceCode numberSource r number-lines code-with-copy"><code class="sourceCode r"><span id="cb62-1"><a href></a><span class="fu">methods</span>(<span class="at">class =</span> <span class="st">&quot;tmix&quot;</span>)</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<div class="cell-output cell-output-stdout">
+<pre><code>#&gt; [1] fit    grad_Q print 
+#&gt; see &#39;?methods&#39; for accessing help and source code</code></pre>
+</div>
+</div>
+<p><code>e_step(m_log, par)</code>: R looks for <code>e_step.tmix_log</code> — found. <code>grad_Q(m_log, par, gam)</code>: no <code>grad_Q.tmix_log</code>, so R tries the next label and uses <code>grad_Q.tmix</code>.</p>
+</section>
+<section id="the-density-class-version-1-as-methods" class="slide level2">
+<h2>The density class: version 1 as methods</h2>
+<p>The code is the same as version 1 — only the data now come from the model object (<code>model$x</code>, <code>model$nu</code>):</p>
+<div class="small-code">
+<div class="cell" data-layout-align="center">
+<div class="code-copy-outer-scaffold"><div class="sourceCode cell-code" id="cb64"><pre class="sourceCode numberSource r number-lines code-with-copy"><code class="sourceCode r"><span id="cb64-1"><a href></a>loglik.tmix_density <span class="ot">&lt;-</span> <span class="cf">function</span>(model, par) {</span>
+<span id="cb64-2"><a href></a>  <span class="fu">sum</span>(<span class="fu">log</span>(<span class="fu">dtmix</span>(model<span class="sc">$</span>x, par, model<span class="sc">$</span>nu)))</span>
+<span id="cb64-3"><a href></a>}</span>
+<span id="cb64-4"><a href></a></span>
+<span id="cb64-5"><a href></a>e_step.tmix_density <span class="ot">&lt;-</span> <span class="cf">function</span>(model, par) {</span>
+<span id="cb64-6"><a href></a>  x <span class="ot">&lt;-</span> model<span class="sc">$</span>x</span>
+<span id="cb64-7"><a href></a>  nu <span class="ot">&lt;-</span> model<span class="sc">$</span>nu</span>
+<span id="cb64-8"><a href></a>  a <span class="ot">&lt;-</span> par[<span class="dv">1</span>] <span class="sc">*</span> <span class="fu">dt_ls</span>(x, par[<span class="dv">2</span>], par[<span class="dv">4</span>], nu[<span class="dv">1</span>])</span>
+<span id="cb64-9"><a href></a>  b <span class="ot">&lt;-</span> (<span class="dv">1</span> <span class="sc">-</span> par[<span class="dv">1</span>]) <span class="sc">*</span> <span class="fu">dt_ls</span>(x, par[<span class="dv">3</span>], par[<span class="dv">5</span>], nu[<span class="dv">2</span>])</span>
+<span id="cb64-10"><a href></a>  a <span class="sc">/</span> (a <span class="sc">+</span> b)</span>
+<span id="cb64-11"><a href></a>}</span>
+<span id="cb64-12"><a href></a></span>
+<span id="cb64-13"><a href></a>Q.tmix_density <span class="ot">&lt;-</span> <span class="cf">function</span>(model, par, gam) {</span>
+<span id="cb64-14"><a href></a>  x <span class="ot">&lt;-</span> model<span class="sc">$</span>x</span>
+<span id="cb64-15"><a href></a>  nu <span class="ot">&lt;-</span> model<span class="sc">$</span>nu</span>
+<span id="cb64-16"><a href></a>  <span class="fu">sum</span>(</span>
+<span id="cb64-17"><a href></a>    gam <span class="sc">*</span> <span class="fu">log</span>(par[<span class="dv">1</span>] <span class="sc">*</span> <span class="fu">dt_ls</span>(x, par[<span class="dv">2</span>], par[<span class="dv">4</span>], nu[<span class="dv">1</span>])) <span class="sc">+</span></span>
+<span id="cb64-18"><a href></a>      (<span class="dv">1</span> <span class="sc">-</span> gam) <span class="sc">*</span> <span class="fu">log</span>((<span class="dv">1</span> <span class="sc">-</span> par[<span class="dv">1</span>]) <span class="sc">*</span> <span class="fu">dt_ls</span>(x, par[<span class="dv">3</span>], par[<span class="dv">5</span>], nu[<span class="dv">2</span>]))</span>
+<span id="cb64-19"><a href></a>  )</span>
+<span id="cb64-20"><a href></a>}</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+</div>
+</div>
+</section>
+<section id="the-log-class" class="slide level2">
+<h2>The log class</h2>
+<div class="small-code">
+<div class="cell" data-layout-align="center">
+<div class="code-copy-outer-scaffold"><div class="sourceCode cell-code" id="cb65"><pre class="sourceCode numberSource r number-lines code-with-copy"><code class="sourceCode r"><span id="cb65-1"><a href></a>ldt_ls <span class="ot">&lt;-</span> <span class="cf">function</span>(x, mu, sigma, nu, log_const) {</span>
+<span id="cb65-2"><a href></a>  log_const <span class="sc">-</span> <span class="fu">log</span>(sigma) <span class="sc">-</span> (nu <span class="sc">+</span> <span class="dv">1</span>) <span class="sc">/</span> <span class="dv">2</span> <span class="sc">*</span> <span class="fu">log1p</span>((x <span class="sc">-</span> mu)<span class="sc">^</span><span class="dv">2</span> <span class="sc">/</span> (nu <span class="sc">*</span> sigma<span class="sc">^</span><span class="dv">2</span>))</span>
+<span id="cb65-3"><a href></a>}</span>
+<span id="cb65-4"><a href></a></span>
+<span id="cb65-5"><a href></a>log_comp <span class="ot">&lt;-</span> <span class="cf">function</span>(model, par) {</span>
+<span id="cb65-6"><a href></a>  x <span class="ot">&lt;-</span> model<span class="sc">$</span>x</span>
+<span id="cb65-7"><a href></a>  nu <span class="ot">&lt;-</span> model<span class="sc">$</span>nu</span>
+<span id="cb65-8"><a href></a>  k <span class="ot">&lt;-</span> model<span class="sc">$</span>log_const</span>
+<span id="cb65-9"><a href></a>  <span class="fu">list</span>(</span>
+<span id="cb65-10"><a href></a>    <span class="at">a =</span> <span class="fu">log</span>(par[<span class="dv">1</span>]) <span class="sc">+</span> <span class="fu">ldt_ls</span>(x, par[<span class="dv">2</span>], par[<span class="dv">4</span>], nu[<span class="dv">1</span>], k[<span class="dv">1</span>]),</span>
+<span id="cb65-11"><a href></a>    <span class="at">b =</span> <span class="fu">log1p</span>(<span class="sc">-</span>par[<span class="dv">1</span>]) <span class="sc">+</span> <span class="fu">ldt_ls</span>(x, par[<span class="dv">3</span>], par[<span class="dv">5</span>], nu[<span class="dv">2</span>], k[<span class="dv">2</span>])</span>
+<span id="cb65-12"><a href></a>  )</span>
+<span id="cb65-13"><a href></a>}</span>
+<span id="cb65-14"><a href></a></span>
+<span id="cb65-15"><a href></a>loglik.tmix_log <span class="ot">&lt;-</span> <span class="cf">function</span>(model, par) {</span>
+<span id="cb65-16"><a href></a>  lc <span class="ot">&lt;-</span> <span class="fu">log_comp</span>(model, par)</span>
+<span id="cb65-17"><a href></a>  m <span class="ot">&lt;-</span> <span class="fu">pmax</span>(lc<span class="sc">$</span>a, lc<span class="sc">$</span>b)</span>
+<span id="cb65-18"><a href></a>  <span class="fu">sum</span>(m <span class="sc">+</span> <span class="fu">log</span>(<span class="fu">exp</span>(lc<span class="sc">$</span>a <span class="sc">-</span> m) <span class="sc">+</span> <span class="fu">exp</span>(lc<span class="sc">$</span>b <span class="sc">-</span> m)))</span>
+<span id="cb65-19"><a href></a>}</span>
+<span id="cb65-20"><a href></a></span>
+<span id="cb65-21"><a href></a>e_step.tmix_log <span class="ot">&lt;-</span> <span class="cf">function</span>(model, par) {</span>
+<span id="cb65-22"><a href></a>  lc <span class="ot">&lt;-</span> <span class="fu">log_comp</span>(model, par)</span>
+<span id="cb65-23"><a href></a>  <span class="fu">plogis</span>(lc<span class="sc">$</span>a <span class="sc">-</span> lc<span class="sc">$</span>b)</span>
+<span id="cb65-24"><a href></a>}</span>
+<span id="cb65-25"><a href></a></span>
+<span id="cb65-26"><a href></a>Q.tmix_log <span class="ot">&lt;-</span> <span class="cf">function</span>(model, par, gam) {</span>
+<span id="cb65-27"><a href></a>  lc <span class="ot">&lt;-</span> <span class="fu">log_comp</span>(model, par)</span>
+<span id="cb65-28"><a href></a>  <span class="fu">sum</span>(gam <span class="sc">*</span> lc<span class="sc">$</span>a <span class="sc">+</span> (<span class="dv">1</span> <span class="sc">-</span> gam) <span class="sc">*</span> lc<span class="sc">$</span>b)</span>
+<span id="cb65-29"><a href></a>}</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+</div>
+</div>
+<p><code>ldt_ls()</code> and <code>log_comp()</code> are helper functions, not methods. <code>log_comp()</code> computes <span class="math inline">\(a_i\)</span> and <span class="math inline">\(b_i\)</span>, which all three methods use.</p>
+</section>
+<section id="one-gem-algorithm-for-both-classes" class="slide level2">
+<h2>One GEM algorithm for both classes</h2>
+<p>The GEM step only talks to the model through the generics:</p>
+<div class="small-code">
+<div class="cell" data-layout-align="center">
+<div class="code-copy-outer-scaffold"><div class="sourceCode cell-code" id="cb66"><pre class="sourceCode numberSource r number-lines code-with-copy"><code class="sourceCode r"><span id="cb66-1"><a href></a>create_gem_step <span class="ot">&lt;-</span> <span class="cf">function</span>(model, <span class="at">step0 =</span> <span class="dv">1</span>, <span class="at">d =</span> <span class="fl">0.5</span>, <span class="at">c =</span> <span class="fl">0.1</span>) {</span>
+<span id="cb66-2"><a href></a>  <span class="fu">force</span>(model)</span>
+<span id="cb66-3"><a href></a></span>
+<span id="cb66-4"><a href></a>  <span class="cf">function</span>(par) {</span>
+<span id="cb66-5"><a href></a>    gam <span class="ot">&lt;-</span> <span class="fu">e_step</span>(model, par) <span class="co"># E-step</span></span>
+<span id="cb66-6"><a href></a>    par[<span class="dv">1</span>] <span class="ot">&lt;-</span> <span class="fu">mean</span>(gam) <span class="co"># M-step for p (closed form)</span></span>
+<span id="cb66-7"><a href></a></span>
+<span id="cb66-8"><a href></a>    g <span class="ot">&lt;-</span> <span class="fu">grad_Q</span>(model, par, gam)</span>
+<span id="cb66-9"><a href></a>    g[<span class="dv">1</span>] <span class="ot">&lt;-</span> <span class="dv">0</span> <span class="co"># p is already optimal</span></span>
+<span id="cb66-10"><a href></a>    Q_old <span class="ot">&lt;-</span> <span class="fu">Q</span>(model, par, gam)</span>
+<span id="cb66-11"><a href></a>    step <span class="ot">&lt;-</span> step0</span>
+<span id="cb66-12"><a href></a></span>
+<span id="cb66-13"><a href></a>    <span class="cf">repeat</span> {</span>
+<span id="cb66-14"><a href></a>      par_new <span class="ot">&lt;-</span> par <span class="sc">+</span> step <span class="sc">*</span> g</span>
+<span id="cb66-15"><a href></a>      <span class="cf">if</span> (par_new[<span class="dv">4</span>] <span class="sc">&gt;</span> <span class="dv">0</span> <span class="sc">&amp;&amp;</span> par_new[<span class="dv">5</span>] <span class="sc">&gt;</span> <span class="dv">0</span> <span class="sc">&amp;&amp;</span></span>
+<span id="cb66-16"><a href></a>        <span class="fu">Q</span>(model, par_new, gam) <span class="sc">&gt;=</span> Q_old <span class="sc">+</span> c <span class="sc">*</span> step <span class="sc">*</span> <span class="fu">sum</span>(g<span class="sc">^</span><span class="dv">2</span>)) {</span>
+<span id="cb66-17"><a href></a>        <span class="cf">break</span></span>
+<span id="cb66-18"><a href></a>      }</span>
+<span id="cb66-19"><a href></a>      step <span class="ot">&lt;-</span> d <span class="sc">*</span> step</span>
+<span id="cb66-20"><a href></a>      <span class="cf">if</span> (step <span class="sc">&lt;</span> <span class="fl">1e-14</span>) {</span>
+<span id="cb66-21"><a href></a>        <span class="fu">return</span>(par) <span class="co"># no ascent possible: stationary point</span></span>
+<span id="cb66-22"><a href></a>      }</span>
+<span id="cb66-23"><a href></a>    }</span>
+<span id="cb66-24"><a href></a>    par_new</span>
+<span id="cb66-25"><a href></a>  }</span>
+<span id="cb66-26"><a href></a>}</span>
+<span id="cb66-27"><a href></a></span>
+<span id="cb66-28"><a href></a>fit.tmix <span class="ot">&lt;-</span> <span class="cf">function</span>(model, <span class="at">par0 =</span> <span class="fu">default_start</span>(model<span class="sc">$</span>x), ...) {</span>
+<span id="cb66-29"><a href></a>  <span class="fu">em</span>(par0, <span class="fu">create_gem_step</span>(model), ...)</span>
+<span id="cb66-30"><a href></a>}</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+</div>
+</div>
+<p>The only change from version 1: <code>e_step(par, x, nu)</code> becomes <code>e_step(model, par)</code>, and so on.</p>
+<div class="cell" data-layout-align="center">
+<div class="code-copy-outer-scaffold"><div class="sourceCode cell-code" id="cb67"><pre class="sourceCode numberSource r number-lines code-with-copy"><code class="sourceCode r"><span id="cb67-1"><a href></a><span class="fu">rbind</span>(<span class="at">density =</span> <span class="fu">fit</span>(<span class="fu">tmix_density</span>(x, nu)),</span>
+<span id="cb67-2"><a href></a>      <span class="at">log     =</span> <span class="fu">fit</span>(<span class="fu">tmix_log</span>(x, nu)))</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<div class="cell-output cell-output-stdout">
+<pre><code>#&gt;               p      mu1    mu2 sigma1  sigma2
+#&gt; density 0.61669 -0.21856 3.0615 1.0354 0.59891
+#&gt; log     0.61669 -0.21856 3.0615 1.0354 0.59891</code></pre>
+</div>
+</div>
+</section>
+<section id="the-same-tests-for-both-classes" class="slide level2">
+<h2>The same tests for both classes</h2>
+<p><code>tests/test-classes.R</code> loops over the two classes, so <em>every</em> check from the testing section runs for both. In addition it checks the two implementations against each other, and that the log scale survives an extreme outlier where the density scale underflows:</p>
+<div class="cell" data-layout-align="center">
+<div class="code-copy-outer-scaffold"><div class="sourceCode cell-code" id="cb69"><pre class="sourceCode numberSource r number-lines code-with-copy"><code class="sourceCode r"><span id="cb69-1"><a href></a>x_out <span class="ot">&lt;-</span> <span class="fu">c</span>(x, <span class="sc">-</span><span class="fl">1e60</span>)</span>
+<span id="cb69-2"><a href></a><span class="fu">c</span>(<span class="at">density =</span> <span class="fu">tail</span>(<span class="fu">e_step</span>(<span class="fu">tmix_density</span>(x_out, nu), par_true), <span class="dv">1</span>),</span>
+<span id="cb69-3"><a href></a>  <span class="at">log     =</span> <span class="fu">tail</span>(<span class="fu">e_step</span>(<span class="fu">tmix_log</span>(x_out, nu), par_true), <span class="dv">1</span>))</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<div class="cell-output cell-output-stdout">
+<pre><code>#&gt; density     log 
+#&gt;     NaN       1</code></pre>
+</div>
+</div>
+<div class="cell" data-layout-align="center">
+<div class="code-copy-outer-scaffold"><div class="sourceCode cell-code" id="cb71"><pre class="sourceCode numberSource r number-lines code-with-copy"><code class="sourceCode r"><span id="cb71-1"><a href></a>test_res2 <span class="ot">&lt;-</span> testthat<span class="sc">::</span><span class="fu">test_file</span>(<span class="st">&quot;tests/test-classes.R&quot;</span>, <span class="at">reporter =</span> <span class="st">&quot;silent&quot;</span>)</span>
+<span id="cb71-2"><a href></a>res2 <span class="ot">&lt;-</span> <span class="fu">as.data.frame</span>(test_res2)[, <span class="fu">c</span>(<span class="st">&quot;test&quot;</span>, <span class="st">&quot;nb&quot;</span>, <span class="st">&quot;failed&quot;</span>, <span class="st">&quot;error&quot;</span>)]</span>
+<span id="cb71-3"><a href></a>res2</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<div class="cell-output cell-output-stdout">
+<pre><code>#&gt;                                                                       test nb failed error
+#&gt; 1                              both implementations are subclasses of tmix  2      0 FALSE
+#&gt; 2                 density: gradient of Q matches numerical differentiation  1      0 FALSE
+#&gt; 3                                               density: Fisher&#39;s identity  1      0 FALSE
+#&gt; 4                density: each GEM step increases Q and the log-likelihood 60      0 FALSE
+#&gt; 5                           density: GEM and optim() find the same maximum  1      0 FALSE
+#&gt; 6                           density: GEM agrees with teigen when nu1 = nu2  2      0 FALSE
+#&gt; 7                     log: gradient of Q matches numerical differentiation  1      0 FALSE
+#&gt; 8                                                   log: Fisher&#39;s identity  1      0 FALSE
+#&gt; 9                    log: each GEM step increases Q and the log-likelihood 60      0 FALSE
+#&gt; 10                              log: GEM and optim() find the same maximum  1      0 FALSE
+#&gt; 11                              log: GEM agrees with teigen when nu1 = nu2  2      0 FALSE
+#&gt; 12                the two implementations compute the same building blocks  4      0 FALSE
+#&gt; 13                               the two implementations give the same fit  1      0 FALSE
+#&gt; 14 the log scale survives an extreme outlier where the density scale fails  2      0 FALSE</code></pre>
+</div>
+</div>
+<p><strong>139 expectations, 0 failures.</strong></p>
+</section>
+<section id="is-it-faster" class="slide level2">
+<h2>Is it faster?</h2>
+<p>The same data as in the profiling (<span class="math inline">\(N = 5000\)</span>). <code>check</code> makes <code>bench::mark</code> verify that both classes give the same estimate:</p>
+<div class="cell" data-layout-align="center">
+<div class="code-copy-outer-scaffold"><div class="sourceCode cell-code" id="cb73"><pre class="sourceCode numberSource r number-lines code-with-copy"><code class="sourceCode r"><span id="cb73-1"><a href></a>model_density <span class="ot">&lt;-</span> <span class="fu">tmix_density</span>(x_big, nu)</span>
+<span id="cb73-2"><a href></a>model_log <span class="ot">&lt;-</span> <span class="fu">tmix_log</span>(x_big, nu)</span>
+<span id="cb73-3"><a href></a>same_fit <span class="ot">&lt;-</span> <span class="cf">function</span>(a, b) <span class="fu">isTRUE</span>(<span class="fu">all.equal</span>(<span class="fu">as.vector</span>(a), <span class="fu">as.vector</span>(b), <span class="at">tolerance =</span> <span class="fl">1e-8</span>))</span>
+<span id="cb73-4"><a href></a>bm_classes <span class="ot">&lt;-</span> bench<span class="sc">::</span><span class="fu">mark</span>(<span class="at">density =</span> <span class="fu">fit</span>(model_density), <span class="at">log =</span> <span class="fu">fit</span>(model_log),</span>
+<span id="cb73-5"><a href></a>                          <span class="at">check =</span> same_fit, <span class="at">iterations =</span> <span class="dv">10</span>)</span>
+<span id="cb73-6"><a href></a>bm_classes[, <span class="fu">c</span>(<span class="st">&quot;expression&quot;</span>, <span class="st">&quot;median&quot;</span>, <span class="st">&quot;mem_alloc&quot;</span>)]</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<div class="cell-output cell-output-stdout">
+<pre><code>#&gt; # A tibble: 2 × 3
+#&gt;   expression   median mem_alloc
+#&gt;   &lt;bch:expr&gt; &lt;bch:tm&gt; &lt;bch:byt&gt;
+#&gt; 1 density       643ms    78.7MB
+#&gt; 2 log           126ms    65.3MB</code></pre>
+</div>
+</div>
+<div class="cell" data-layout-align="center">
+<div class="code-copy-outer-scaffold"><div class="sourceCode cell-code" id="cb75"><pre class="sourceCode numberSource r number-lines code-with-copy"><code class="sourceCode r"><span id="cb75-1"><a href></a>par_b <span class="ot">&lt;-</span> <span class="fu">fit</span>(model_log)</span>
+<span id="cb75-2"><a href></a>gam_b <span class="ot">&lt;-</span> <span class="fu">e_step</span>(model_log, par_b)</span>
+<span id="cb75-3"><a href></a>blocks <span class="ot">&lt;-</span> bench<span class="sc">::</span><span class="fu">mark</span>(</span>
+<span id="cb75-4"><a href></a>  <span class="at">Q_density =</span> <span class="fu">Q</span>(model_density, par_b, gam_b),           <span class="at">Q_log =</span> <span class="fu">Q</span>(model_log, par_b, gam_b),</span>
+<span id="cb75-5"><a href></a>  <span class="at">e_step_density =</span> <span class="fu">e_step</span>(model_density, par_b),        <span class="at">e_step_log =</span> <span class="fu">e_step</span>(model_log, par_b),</span>
+<span id="cb75-6"><a href></a>  <span class="at">loglik_density =</span> <span class="fu">loglik</span>(model_density, par_b),        <span class="at">loglik_log =</span> <span class="fu">loglik</span>(model_log, par_b),</span>
+<span id="cb75-7"><a href></a>  <span class="at">check =</span> <span class="cn">FALSE</span></span>
+<span id="cb75-8"><a href></a>)</span>
+<span id="cb75-9"><a href></a>med <span class="ot">&lt;-</span> <span class="fu">setNames</span>(<span class="fl">1e6</span> <span class="sc">*</span> <span class="fu">as.numeric</span>(blocks<span class="sc">$</span>median), <span class="fu">as.character</span>(blocks<span class="sc">$</span>expression))</span>
+<span id="cb75-10"><a href></a><span class="fu">data.frame</span>(</span>
+<span id="cb75-11"><a href></a>  <span class="at">density_us =</span> <span class="fu">round</span>(med[<span class="fu">c</span>(<span class="st">&quot;Q_density&quot;</span>, <span class="st">&quot;e_step_density&quot;</span>, <span class="st">&quot;loglik_density&quot;</span>)]),</span>
+<span id="cb75-12"><a href></a>  <span class="at">log_us     =</span> <span class="fu">round</span>(med[<span class="fu">c</span>(<span class="st">&quot;Q_log&quot;</span>, <span class="st">&quot;e_step_log&quot;</span>, <span class="st">&quot;loglik_log&quot;</span>)]),</span>
+<span id="cb75-13"><a href></a>  <span class="at">speed_up   =</span> <span class="fu">round</span>(med[<span class="fu">c</span>(<span class="st">&quot;Q_density&quot;</span>, <span class="st">&quot;e_step_density&quot;</span>, <span class="st">&quot;loglik_density&quot;</span>)] <span class="sc">/</span></span>
+<span id="cb75-14"><a href></a>                     med[<span class="fu">c</span>(<span class="st">&quot;Q_log&quot;</span>, <span class="st">&quot;e_step_log&quot;</span>, <span class="st">&quot;loglik_log&quot;</span>)], <span class="dv">1</span>),</span>
+<span id="cb75-15"><a href></a>  <span class="at">row.names  =</span> <span class="fu">c</span>(<span class="st">&quot;Q&quot;</span>, <span class="st">&quot;e_step&quot;</span>, <span class="st">&quot;loglik&quot;</span>)</span>
+<span id="cb75-16"><a href></a>)</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<div class="cell-output cell-output-stdout">
+<pre><code>#&gt;        density_us log_us speed_up
+#&gt; Q            1772    271      6.5
+#&gt; e_step       1651    512      3.2
+#&gt; loglik       1654    735      2.2</code></pre>
+</div>
+</div>
+<p>The whole fit is <strong>5.1 times faster</strong> on log scale, with the same estimate and the same number of iterations — because <span class="math inline">\(Q\)</span>, which dominated the profile, got the largest speed-up.</p>
+</section>
+<section id="where-is-the-time-now" class="slide level2">
+<h2>Where is the time now?</h2>
+<p>Profiling the log class in the same way:</p>
+<div class="cell" data-layout-align="center">
+<div class="code-copy-outer-scaffold"><div class="sourceCode cell-code" id="cb77"><pre class="sourceCode numberSource r number-lines code-with-copy"><code class="sourceCode r"><span id="cb77-1"><a href></a>prof_file_log <span class="ot">&lt;-</span> <span class="fu">profile_expr</span>(<span class="cf">for</span> (i <span class="cf">in</span> <span class="dv">1</span><span class="sc">:</span><span class="dv">15</span>) <span class="fu">fit</span>(model_log))</span>
+<span id="cb77-2"><a href></a>prof_log <span class="ot">&lt;-</span> <span class="fu">summaryRprof</span>(prof_file_log)</span>
+<span id="cb77-3"><a href></a>our_funs_log <span class="ot">&lt;-</span> <span class="fu">dQuote</span>(<span class="fu">c</span>(<span class="st">&quot;em_step&quot;</span>, <span class="st">&quot;Q.tmix_log&quot;</span>, <span class="st">&quot;log_comp&quot;</span>, <span class="st">&quot;ldt_ls&quot;</span>, <span class="st">&quot;e_step.tmix_log&quot;</span>,</span>
+<span id="cb77-4"><a href></a>                         <span class="st">&quot;grad_Q.tmix&quot;</span>, <span class="st">&quot;plogis&quot;</span>), <span class="cn">FALSE</span>)</span>
+<span id="cb77-5"><a href></a>prof_log<span class="sc">$</span>by.total[<span class="fu">rownames</span>(prof_log<span class="sc">$</span>by.total) <span class="sc">%in%</span> our_funs_log, ]</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<div class="cell-output cell-output-stdout">
+<pre><code>#&gt;                   total.time total.pct self.time self.pct
+#&gt; &quot;em_step&quot;              0.610     99.19     0.005     0.81
+#&gt; &quot;Q.tmix_log&quot;           0.490     79.67     0.050     8.13
+#&gt; &quot;log_comp&quot;             0.480     78.05     0.015     2.44
+#&gt; &quot;ldt_ls&quot;               0.460     74.80     0.460    74.80
+#&gt; &quot;e_step.tmix_log&quot;      0.070     11.38     0.000     0.00
+#&gt; &quot;plogis&quot;               0.030      4.88     0.030     4.88
+#&gt; &quot;grad_Q.tmix&quot;          0.025      4.07     0.025     4.07</code></pre>
+</div>
+<div class="code-copy-outer-scaffold"><div class="sourceCode cell-code" id="cb79"><pre class="sourceCode numberSource r number-lines code-with-copy"><code class="sourceCode r"><span id="cb79-1"><a href></a>calls_log <span class="ot">&lt;-</span> <span class="fu">count_calls</span>(<span class="fu">fit</span>(model_log), <span class="fu">c</span>(<span class="st">&quot;e_step&quot;</span>, <span class="st">&quot;Q&quot;</span>, <span class="st">&quot;grad_Q&quot;</span>))</span>
+<span id="cb79-2"><a href></a>calls_log</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<div class="cell-output cell-output-stdout">
+<pre><code>#&gt; e_step      Q grad_Q 
+#&gt;     30    322     30</code></pre>
+</div>
+</div>
+<ul>
+<li>Each call to <span class="math inline">\(Q\)</span> is now much cheaper, but there are still <strong>322 calls</strong> per fit — the log scale changed the cost per call, not the number of calls.</li>
+<li>So <span class="math inline">\(Q\)</span> in the line search is still about 80% of the time, now spent in <code>log1p()</code> inside <code>ldt_ls()</code> instead of in <code>dt()</code>.</li>
+</ul>
+<p><span class="lesson">The profile pointed at <code>dt()</code>, and the log scale removed it: <span class="math inline">\(Q\)</span> became 7 times cheaper, the whole fit 5 times faster, and the answer is the same. The S3 design made the comparison fair: one GEM algorithm and one test suite for both implementations. The next hotspot is hotspot 1 — the number of <span class="math inline">\(Q\)</span> evaluations in the line search.</span></p>
 
 </section></section>
     </div>

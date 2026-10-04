@@ -1,5 +1,5 @@
 # Interactive profiling demo (run in RStudio from the project folder) ----------
-source("R/load.R")
+source("R/load-v1.R")
 library(profvis)
 
 set.seed(7)

@@ -1,4 +1,4 @@
-# The generalized EM algorithm ------------------------------------------------
+# Version 1: the generalized EM algorithm with plain functions -----------------
 
 # One GEM step: E-step, exact M-step for p, and one gradient step on Q for
 # (mu1, mu2, sigma1, sigma2). The step size is found by backtracking: start at
@@ -30,26 +30,6 @@ create_gem_step <- function(x, nu, step0 = 1, d = 0.5, c = 0.1) {
     }
     par_new
   }
-}
-
-# EM driver from the lecture, with the same stopping rule:
-# stop when ||par - par0||^2 <= eps (||par||^2 + eps)
-em <- function(par, em_step, eps = 1e-10, maxit = 1000, cb = NULL) {
-  for (i in seq_len(maxit)) {
-    par0 <- par
-    par <- em_step(par)
-
-    if (!is.null(cb)) {
-      cb()
-    }
-
-    if (sum((par - par0)^2) <= eps * (sum(par^2) + eps)) {
-      break
-    }
-  }
-  par <- setNames(as.vector(par), par_names)
-  attr(par, "iter") <- i
-  par
 }
 
 # Convenience wrapper: fit the mixture with the GEM algorithm

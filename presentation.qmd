@@ -32,7 +32,7 @@ knitr:
 library(ggplot2)
 library(patchwork)
 library(testthat)
-source("R/load.R")
+source("R/load-v1.R")
 theme_set(theme_minimal(base_size = 15))
 options(digits = 5, width = 110)
 
@@ -47,6 +47,7 @@ show_fun <- function(name) {
 1. **A simple implementation** — the formulas coded directly, on the density scale, with R's `dt()`
 2. **Is it correct?** — checks against theory, numerical derivatives, simulation and R packages (`teigen`, `mclust`)
 3. **Where is it slow?** — profiling with `Rprof` and `profvis`
+4. **A faster implementation** — a log-scale version, and an S3 design with two classes so the two implementations share the same GEM code and tests
 
 Throughout: [boxes like this one]{.lesson} mark what I learned along the way.
 
@@ -591,5 +592,266 @@ data.frame(
 [The profile is dominated by one line (the $Q$ call in the line search) and one primitive (`dt()`). Counting calls and timing each building block explains *why*: total time ≈ number of calls × cost per call.]{.lesson}
 
 ::: notes
-Next steps (next part of the presentation): investigate each hotspot, compare the density-scale implementation with a log-scale implementation (plogis / log-sum-exp), and restructure the code with OOP so the two implementations can be benchmarked against each other with shared methods.
+Transition: hotspot 2 (dt) is attacked next with a log-scale implementation. Hotspot 1 (the number of Q calls) is still there afterwards, which the new profile at the end shows.
 :::
+
+# A faster implementation: the log scale
+
+```{r}
+#| label: load-s3
+#| include: false
+# Version 2 of the code: the building blocks become S3 generics (replaces the plain functions)
+source("R/load.R")
+```
+
+## From the profile to a plan
+
+**What the profile showed:** `Q()` takes `r round(prof$by.total['"Q"', "total.pct"])`% of the time, and `dt()` alone `r round(prof$by.self['"dt"', "self.pct"])`%.
+
+**Observation:** $Q$ only needs **log**-densities,
+$$
+Q(\theta \mid \theta') = \sum_i \gamma_i \big(\log p + \log f_1(x_i)\big) + (1 - \gamma_i)\big(\log(1-p) + \log f_2(x_i)\big),
+$$
+but version 1 computes the density with `dt()` and then takes `log()` of it — a detour through the density scale.
+
+. . .
+
+**Idea:** write the log-density out and compute it directly,
+$$
+\log f(x) = \underbrace{\log\Gamma\big(\tfrac{\nu+1}{2}\big) - \log\Gamma\big(\tfrac{\nu}{2}\big) - \tfrac12\log(\pi\nu)}_{c(\nu)\text{: a constant, computed once}} - \log\sigma - \tfrac{\nu+1}{2}\log\Big(1 + \tfrac{(x-\mu)^2}{\nu\sigma^2}\Big).
+$$
+With $a_i = \log p + \log f_1(x_i)$ and $b_i = \log(1-p) + \log f_2(x_i)$:
+
+| Building block | Version 1 (density scale) | Log scale |
+|---|---|---|
+| $Q$ | `log(p * dt(...))`, twice per point | $\sum_i \gamma_i a_i + (1-\gamma_i) b_i$ — no `dt()`, no `log()` |
+| E-step | $\gamma_i = \frac{p f_1}{p f_1 + (1-p) f_2}$ | $\gamma_i = \frac{1}{1 + e^{b_i - a_i}}$ = `plogis(a - b)` |
+| log-likelihood | `sum(log(dtmix(...)))` | $\log(e^{a_i} + e^{b_i})$ with the log-sum-exp trick |
+
+. . .
+
+**To compare the two fairly** they must run through the *same* GEM code and the *same* tests. So the code is restructured with S3: one class per implementation, and everything they share in a common parent class.
+
+## The S3 design: two classes with a common parent
+
+:::: {.columns}
+::: {.column width="48%"}
+```{=html}
+<svg viewBox="0 0 520 400" style="width: 100%; max-width: 540px;" xmlns="http://www.w3.org/2000/svg" font-family="monospace" font-size="15" role="img" aria-label="Class diagram: tmix is the parent of tmix_density and tmix_log">
+  <g stroke="#2c7fb8" stroke-width="1.5" fill="white">
+    <rect x="150" y="8" width="220" height="150"/>
+    <rect x="150" y="8" width="220" height="32" fill="#dcebf7"/>
+    <line x1="150" y1="92" x2="370" y2="92"/>
+    <rect x="8" y="230" width="230" height="162"/>
+    <rect x="8" y="230" width="230" height="32" fill="#dcebf7"/>
+    <line x1="8" y1="294" x2="238" y2="294"/>
+    <rect x="282" y="230" width="230" height="162"/>
+    <rect x="282" y="230" width="230" height="32" fill="#dcebf7"/>
+    <line x1="282" y1="294" x2="512" y2="294"/>
+    <polyline points="123,230 123,200 215,200 215,172" fill="none"/>
+    <polygon points="215,158 207,172 223,172"/>
+    <polyline points="397,230 397,200 305,200 305,172" fill="none"/>
+    <polygon points="305,158 297,172 313,172"/>
+  </g>
+  <g fill="#222">
+    <text x="260" y="30" text-anchor="middle" font-weight="bold">tmix</text>
+    <text x="162" y="62">x   (data)</text>
+    <text x="162" y="82">nu  (shape parameters)</text>
+    <text x="162" y="114">grad_Q()</text>
+    <text x="162" y="132">fit()</text>
+    <text x="162" y="150">print()</text>
+    <text x="123" y="252" text-anchor="middle" font-weight="bold">tmix_density</text>
+    <text x="20" y="282" fill="#777">(no extra fields)</text>
+    <text x="20" y="316">loglik()</text>
+    <text x="20" y="334">e_step()</text>
+    <text x="20" y="352">Q()</text>
+    <text x="20" y="380" fill="#2c7fb8">density scale: dt()</text>
+    <text x="397" y="252" text-anchor="middle" font-weight="bold">tmix_log</text>
+    <text x="294" y="282">log_const  (= c(nu))</text>
+    <text x="294" y="316">loglik()</text>
+    <text x="294" y="334">e_step()</text>
+    <text x="294" y="352">Q()</text>
+    <text x="294" y="380" fill="#2c7fb8">log scale: log1p()</text>
+  </g>
+</svg>
+```
+:::
+::: {.column width="52%"}
+**`tmix`** (parent) holds what is the same for both:
+
+- the data `x` and the shape parameters `nu`
+- `grad_Q()`: the gradient is the same formula
+- `fit()`: the GEM algorithm
+- `print()`
+
+**`tmix_density`**: version 1 — `loglik()`, `e_step()` and `Q()` with `dt()`.
+
+**`tmix_log`**: the same three methods on log scale, plus the constant $c(\nu)$ stored in the object.
+
+Only what *differs* between the implementations is written twice.
+:::
+::::
+
+## How an object is created
+
+In S3 a class is not a separate definition: an object is an ordinary **list with a class label**, made by a **constructor** function.
+
+::: {.small-code}
+```{r}
+#| eval: false
+#| code: !expr c(show_fun("new_tmix"), "", show_fun("tmix_density"), "", show_fun("tmix_log"))
+```
+:::
+
+```{r}
+#| label: s3-object
+m_log <- tmix_log(x, nu)
+class(m_log)
+str(unclass(m_log))
+m_log
+```
+
+The label `c("tmix_log", "tmix")` says: "I am a `tmix_log` — and where nothing more specific exists, a `tmix`". That is the inheritance.
+
+## Generics, methods and dispatch
+
+A **generic** only dispatches; a **method** is an ordinary function named `generic.class`:
+
+```{r}
+#| eval: false
+#| code: !expr c(show_fun("loglik"), show_fun("e_step"), show_fun("Q"), show_fun("grad_Q"), show_fun("fit"))
+```
+
+| Generic | `tmix_density` | `tmix_log` |
+|---|---|---|
+| `loglik()` | `loglik.tmix_density` | `loglik.tmix_log` |
+| `e_step()` | `e_step.tmix_density` | `e_step.tmix_log` |
+| `Q()` | `Q.tmix_density` | `Q.tmix_log` |
+| `grad_Q()` | `grad_Q.tmix` (inherited) | `grad_Q.tmix` (inherited) |
+| `fit()`, `print()` | `fit.tmix`, `print.tmix` (inherited) | `fit.tmix`, `print.tmix` (inherited) |
+
+```{r}
+#| label: s3-methods
+methods(class = "tmix_log")
+methods(class = "tmix")
+```
+
+`e_step(m_log, par)`: R looks for `e_step.tmix_log` — found. `grad_Q(m_log, par, gam)`: no `grad_Q.tmix_log`, so R tries the next label and uses `grad_Q.tmix`.
+
+## The density class: version 1 as methods
+
+The code is the same as version 1 — only the data now come from the model object (`model$x`, `model$nu`):
+
+::: {.small-code}
+```{r}
+#| eval: false
+#| code: !expr c(show_fun("loglik.tmix_density"), "", show_fun("e_step.tmix_density"), "", show_fun("Q.tmix_density"))
+```
+:::
+
+## The log class
+
+::: {.small-code}
+```{r}
+#| eval: false
+#| code: !expr c(show_fun("ldt_ls"), "", show_fun("log_comp"), "", show_fun("loglik.tmix_log"), "", show_fun("e_step.tmix_log"), "", show_fun("Q.tmix_log"))
+```
+:::
+
+`ldt_ls()` and `log_comp()` are helper functions, not methods. `log_comp()` computes $a_i$ and $b_i$, which all three methods use.
+
+## One GEM algorithm for both classes
+
+The GEM step only talks to the model through the generics:
+
+::: {.small-code}
+```{r}
+#| eval: false
+#| code: !expr c(show_fun("create_gem_step"), "", show_fun("fit.tmix"))
+```
+:::
+
+The only change from version 1: `e_step(par, x, nu)` becomes `e_step(model, par)`, and so on.
+
+```{r}
+#| label: s3-fit
+rbind(density = fit(tmix_density(x, nu)),
+      log     = fit(tmix_log(x, nu)))
+```
+
+## The same tests for both classes
+
+`tests/test-classes.R` loops over the two classes, so *every* check from the testing section runs for both. In addition it checks the two implementations against each other, and that the log scale survives an extreme outlier where the density scale underflows:
+
+```{r}
+#| label: s3-outlier
+x_out <- c(x, -1e60)
+c(density = tail(e_step(tmix_density(x_out, nu), par_true), 1),
+  log     = tail(e_step(tmix_log(x_out, nu), par_true), 1))
+```
+
+```{r}
+#| label: s3-tests
+test_res2 <- testthat::test_file("tests/test-classes.R", reporter = "silent")
+res2 <- as.data.frame(test_res2)[, c("test", "nb", "failed", "error")]
+res2
+```
+
+**`r sum(res2$nb)` expectations, `r sum(res2$failed)` failures.**
+
+## Is it faster?
+
+The same data as in the profiling ($N = 5000$). `check` makes `bench::mark` verify that both classes give the same estimate:
+
+```{r}
+#| label: s3-bench
+model_density <- tmix_density(x_big, nu)
+model_log <- tmix_log(x_big, nu)
+same_fit <- function(a, b) isTRUE(all.equal(as.vector(a), as.vector(b), tolerance = 1e-8))
+bm_classes <- bench::mark(density = fit(model_density), log = fit(model_log),
+                          check = same_fit, iterations = 10)
+bm_classes[, c("expression", "median", "mem_alloc")]
+```
+
+```{r}
+#| label: s3-blocks
+par_b <- fit(model_log)
+gam_b <- e_step(model_log, par_b)
+blocks <- bench::mark(
+  Q_density = Q(model_density, par_b, gam_b),           Q_log = Q(model_log, par_b, gam_b),
+  e_step_density = e_step(model_density, par_b),        e_step_log = e_step(model_log, par_b),
+  loglik_density = loglik(model_density, par_b),        loglik_log = loglik(model_log, par_b),
+  check = FALSE
+)
+med <- setNames(1e6 * as.numeric(blocks$median), as.character(blocks$expression))
+data.frame(
+  density_us = round(med[c("Q_density", "e_step_density", "loglik_density")]),
+  log_us     = round(med[c("Q_log", "e_step_log", "loglik_log")]),
+  speed_up   = round(med[c("Q_density", "e_step_density", "loglik_density")] /
+                     med[c("Q_log", "e_step_log", "loglik_log")], 1),
+  row.names  = c("Q", "e_step", "loglik")
+)
+```
+
+The whole fit is **`r round(as.numeric(bm_classes$median[1] / bm_classes$median[2]), 1)` times faster** on log scale, with the same estimate and the same number of iterations — because $Q$, which dominated the profile, got the largest speed-up.
+
+## Where is the time now?
+
+Profiling the log class in the same way:
+
+```{r}
+#| label: s3-profile
+prof_file_log <- profile_expr(for (i in 1:15) fit(model_log))
+prof_log <- summaryRprof(prof_file_log)
+our_funs_log <- dQuote(c("em_step", "Q.tmix_log", "log_comp", "ldt_ls", "e_step.tmix_log",
+                         "grad_Q.tmix", "plogis"), FALSE)
+prof_log$by.total[rownames(prof_log$by.total) %in% our_funs_log, ]
+
+calls_log <- count_calls(fit(model_log), c("e_step", "Q", "grad_Q"))
+calls_log
+```
+
+- Each call to $Q$ is now much cheaper, but there are still **`r calls_log[["Q"]]` calls** per fit — the log scale changed the cost per call, not the number of calls.
+- So $Q$ in the line search is still about `r round(prof_log$by.total['"Q.tmix_log"', "total.pct"])`% of the time, now spent in `log1p()` inside `ldt_ls()` instead of in `dt()`.
+
+[The profile pointed at `dt()`, and the log scale removed it: $Q$ became `r round(med[["Q_density"]] / med[["Q_log"]])` times cheaper, the whole fit `r round(as.numeric(bm_classes$median[1] / bm_classes$median[2]))` times faster, and the answer is the same. The S3 design made the comparison fair: one GEM algorithm and one test suite for both implementations. The next hotspot is hotspot 1 — the number of $Q$ evaluations in the line search.]{.lesson}
