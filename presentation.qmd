@@ -303,69 +303,6 @@ Two different algorithms agree on the estimate and on the log-likelihood.
 
 # Where is it slow?
 
-## Profiling by function
-
-```{r}
-#| label: prof-setup
-#| include: false
-set.seed(7)
-x_big <- rtmix(5000, par_true, nu)
-fit_big <- gem(x_big, nu)
-n_iter <- attr(fit_big, "iter")
-bm_fit <- bench::mark(gem(x_big, nu), iterations = 5)
-
-prof_file <- profile_expr(for (i in 1:5) gem(x_big, nu))
-prof <- summaryRprof(prof_file)
-```
-
-A larger data set, $N = 5000$, so the time is spent on computation and not on overhead. One fit takes about **`r format(bm_fit$median)`** and `r n_iter` iterations. Where does the time go?
-
-`Rprof` samples the call stack every 5 ms (here over 5 fits). Read the chart from the top: each box is a function, its **width** is its share of the run time, and the boxes below it are what it calls.
-
-```{r}
-#| label: plot-prof-functions
-#| echo: false
-#| fig-height: 3.3
-pt <- function(f, col) { v <- prof$by.total[dQuote(f, FALSE), col]; if (is.na(v)) 0 else v }
-Q_tot <- pt("Q", "total.pct"); Q_self <- pt("Q", "self.pct")
-E_tot <- pt("e_step", "total.pct"); E_self <- pt("e_step", "self.pct")
-flame <- data.frame(
-  label = c("gem(): one fit", "Q()", "e_step()", "", "dt()", "log(), sum()", "dt()"),
-  xmin  = c(0, 0, Q_tot, Q_tot + E_tot, 0, Q_tot - Q_self, Q_tot),
-  xmax  = c(100, Q_tot, Q_tot + E_tot, 100, Q_tot - Q_self, Q_tot, Q_tot + E_tot - E_self),
-  level = c(3, 2, 2, 2, 1, 1, 1),
-  kind  = c("driver", "Q", "e_step", "other", "dt", "Q", "dt")
-)
-flame$pct <- flame$xmax - flame$xmin
-flame$text <- ifelse(flame$pct >= 12, paste0(flame$label, "  ", round(flame$pct), "%"),
-                     ifelse(flame$pct >= 6, flame$label, ""))
-ggplot(flame) +
-  geom_rect(aes(xmin = xmin, xmax = xmax, ymin = level - 0.46, ymax = level + 0.46, fill = kind),
-            colour = "white", linewidth = 1) +
-  geom_text(aes(x = (xmin + xmax) / 2, y = level, label = text), size = ifelse(flame$pct < 12, 3.6, 4.8)) +
-  scale_fill_manual(values = c(driver = "grey85", Q = "#9ecae1", e_step = "#c7e9c0",
-                               other = "grey92", dt = "#f4a582"), guide = "none") +
-  scale_y_continuous(breaks = 1:3, labels = c("... which call", "... calls", "the fit")) +
-  scale_x_continuous(breaks = seq(0, 100, 25), expand = c(0.01, 0)) +
-  labs(x = "share of the run time (%)", y = NULL) +
-  theme(panel.grid = element_blank())
-```
-
-- `Q()` takes about `r round(prof$by.total['"Q"', "total.pct"])`% of the time, even though it is only a helper inside the GEM step.
-- Almost all of that is spent in `dt()`: in total `dt()` is running about `r round(prof$by.self['"dt"', "self.pct"])`% of the time.
-- The E-step is small in comparison, and the gradient is too cheap to show.
-
-## Profiling by line
-
-The same samples, attributed to source lines (`Rprof(line.profiling = TRUE)`):
-
-```{r}
-#| label: prof-lines
-profile_lines(prof_file)
-```
-
-The line in `gem.R` that dominates is the call to `Q()` **inside the backtracking loop**. Inside `Q()` and `e_step()`, the time is spent in `dt_ls()`, i.e. in `dt()`.
-
 ## Why? Number of calls × cost per call
 
 The profile says *where* the time goes. To see *why*, count how often each building block is called in one fit ($N = 5000$, `r n_iter` iterations) and time a single call with `bench::mark`:
