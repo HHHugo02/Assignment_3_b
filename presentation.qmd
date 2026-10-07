@@ -48,7 +48,7 @@ show_fun <- function(name) {
 3. **Where is it slow?**  profiling with `Rprof` and `profvis`
 4. **A faster implementation**  a log-scale version with a shorter first step in the line search, and an S3 design with two classes so the two implementations share the same GEM code
 5. **How good is it?**  `bench::press` against R's own optimizers
-
+ 
 # A simple implementation
 
 ## Two-component mixture of $t$-distributions
