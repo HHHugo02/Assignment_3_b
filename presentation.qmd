@@ -75,7 +75,6 @@ par0 <- default_start(x)
 round(par0, 3)
 ```
 
-`default_start()`: $p = 0.5$, quartiles for $\mu$, $\text{sd}(x)/2$ for $\sigma$.
 :::
 
 ::: {.column width="55%"}
@@ -229,7 +228,7 @@ ggplot(step_df, aes(s, change)) +
   labs(x = "step size s", y = "change in Q")
 ```
 
-[The gradient only gives the *direction*. A long step jumps past the top and $Q$ **decreases** (then it is not a GEM step), and an even longer one ($s > `r signif(min(-par1[4:5] / g[4:5]), 2)`$) makes $\sigma$ negative; too short a step barely moves. The right length depends on the data: the gradient is a sum over $N$ points and scales like $N / \sigma^2$.]{.problem}
+[The gradient only gives the *direction*. A long step jumps past the top and $Q$ **decreases** (then it is not a GEM step), and an even longer one ($s > `r signif(min(-par1[4:5] / g[4:5]), 2)`$) makes $\sigma$ negative; too short a step barely moves. The right length depends on the data.]{.problem}
 
 . . .
 
