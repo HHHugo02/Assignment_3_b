@@ -1,6 +1,6 @@
 ---
 title: "EM for Mixtures of t-Distributions"
-subtitle: "Computational Statistics — Assignment 3, topic B"
+subtitle: "Computational Statistics, Assignment 3, topic B"
 format:
   revealjs:
     theme: default
@@ -43,11 +43,11 @@ show_fun <- function(name) {
 
 ## Roadmap
 
-1. **A simple implementation** — the formulas coded directly, on the density scale, with R's `dt()`
-2. **Is it correct?** — a test against `optim()`
-3. **Where is it slow?** — profiling with `Rprof` and `profvis`
-4. **A faster implementation** — a log-scale version with a shorter first step in the line search, and an S3 design with two classes so the two implementations share the same GEM code
-5. **How good is it?** — `bench::press` against R's own optimizers
+1. **A simple implementation**  the formulas coded directly, on the density scale, with R's `dt()`
+2. **Is it correct?**  a test against `optim()`
+3. **Where is it slow?**  profiling with `Rprof` and `profvis`
+4. **A faster implementation**  a log-scale version with a shorter first step in the line search, and an S3 design with two classes so the two implementations share the same GEM code
+5. **How good is it?**  `bench::press` against R's own optimizers
 
 # A simple implementation
 
@@ -95,7 +95,7 @@ ggplot(data.frame(x), aes(x)) +
 
 ## Missing data: the component labels
 
-**Idea:** if we knew which component each $x_i$ came from, estimation would be easy — just like the two coins in lecture 9.
+**Idea:** if we knew which component each $x_i$ came from, estimation would be easy  just like the two coins in lecture 9.
 
 Introduce the (unobserved) label $Z_i \in \{1, 2\}$:
 $$
@@ -109,7 +109,7 @@ $$
 
 . . .
 
-**Check:** summing over $z_i \in \{1, 2\}$ gives $p f_1(x_i) + (1-p) f_2(x_i)$ — exactly the mixture density. So $(X, Z)$ is a valid complete-data model for our observed $X$.
+**Check:** summing over $z_i \in \{1, 2\}$ gives $p f_1(x_i) + (1-p) f_2(x_i)$  exactly the mixture density. So $(X, Z)$ is a valid complete-data model for our observed $X$.
 
 **Complete-data log-likelihood** (what we could maximize if $Z$ were observed):
 $$
@@ -122,14 +122,14 @@ The trick of EM is to choose missing data such that the complete-data problem is
 
 ## E-step: from $\ell_c$ to $Q$
 
-$Q(\theta \mid \hat\theta) = E_{\hat\theta}\big(\ell_c(\theta) \mid X = x\big)$ — average $\ell_c$ over what the labels could be, given the data and the current guess $\hat\theta$.
+$Q(\theta \mid \hat\theta) = E_{\hat\theta}\big(\ell_c(\theta) \mid X = x\big)$  average $\ell_c$ over what the labels could be, given the data and the current guess $\hat\theta$.
 
-**Step 1 — linearity.** Given $x$, the terms $\log p + \log f_1(x_i)$ are just numbers, so the expectation only hits the indicators:
+**Step 1  linearity.** Given $x$, the terms $\log p + \log f_1(x_i)$ are just numbers, so the expectation only hits the indicators:
 $$
 E_{\hat\theta}\big(\mathbf{1}(Z_i = 1) \mid X = x\big) = P_{\hat\theta}(Z_i = 1 \mid X_i = x_i) =: \gamma_i
 $$
 
-**Step 2 — Bayes' formula.** With $\hat f_j$ the density of component $j$ at the current guess $(\hat\mu_j, \hat\sigma_j)$:
+**Step 2  Bayes' formula.** With $\hat f_j$ the density of component $j$ at the current guess $(\hat\mu_j, \hat\sigma_j)$:
 $$
 \gamma_i = \frac{P(Z_i = 1)\, f(x_i \mid Z_i = 1)}{f(x_i)} = \frac{\hat p\, \hat f_1(x_i)}{\hat p\, \hat f_1(x_i) + (1 - \hat p)\, \hat f_2(x_i)}
 $$
@@ -156,7 +156,7 @@ ggplot(gdf, aes(x, gamma, colour = theta)) +
   labs(y = expression(gamma == P(Z == 1 ~ "|" ~ X == x)), colour = NULL)
 ```
 
-## M-step: maximize $Q$ — what can be solved?
+## M-step: maximize $Q$  what can be solved?
 
 $Q$ splits into three parts that can be maximized separately:
 $$
@@ -165,7 +165,7 @@ Q = \underbrace{\sum_i \gamma_i \log p + (1 - \gamma_i)\log(1-p)}_{\text{only } 
   + \underbrace{\sum_i (1 - \gamma_i) \log f_2(x_i)}_{\text{only } \mu_2, \sigma_2}
 $$
 
-**$p$:** $\ \partial_p Q = \frac{\sum_i \gamma_i}{p} - \frac{N - \sum_i \gamma_i}{1 - p} = 0 \;\Rightarrow\; p = \frac{1}{N}\sum_i \gamma_i$ — closed form.
+**$p$:** $\ \partial_p Q = \frac{\sum_i \gamma_i}{p} - \frac{N - \sum_i \gamma_i}{1 - p} = 0 \;\Rightarrow\; p = \frac{1}{N}\sum_i \gamma_i$  closed form.
 
 . . .
 
@@ -189,12 +189,12 @@ $$
 \mu_1 = \frac{\sum_i \gamma_i w_{i1} x_i}{\sum_i \gamma_i w_{i1}}, \qquad
 \sigma_1^2 = \frac{\sum_i \gamma_i w_{i1} r_{i1}^2}{\sum_i \gamma_i}
 $$
-— but $w_{i1}$ depends on $\mu_1$ and $\sigma_1$ themselves: fixed-point equations, not formulas.
+ but $w_{i1}$ depends on $\mu_1$ and $\sigma_1$ themselves: fixed-point equations, not formulas.
 
 [No closed-form M-step for $(\mu, \sigma)$. **Generalized EM:** we only need $Q(\theta_{n+1} \mid \theta_n) \ge Q(\theta_n \mid \theta_n)$, so: exact update of $p$ + one uphill (gradient) step for $(\mu_1, \mu_2, \sigma_1, \sigma_2)$.]{.problem}
 
 
-## One gradient step — but how long?
+## One gradient step  but how long?
 
 First iteration from `par0`: E-step, update $p$, and then move a step of length $s$ along the gradient, $\theta + s\, g$. How much does $Q$ change?
 
@@ -233,7 +233,7 @@ ggplot(step_df, aes(s, change)) +
 
 . . .
 
-**Solution — backtracking:** start with a long step and halve it until $Q$ has increased enough (Armijo condition $Q(\theta + s g) \ge Q(\theta) + c\, s\, \|g\|^2$).
+**Solution  backtracking:** start with a long step and halve it until $Q$ has increased enough (Armijo condition $Q(\theta + s g) \ge Q(\theta) + c\, s\, \|g\|^2$).
 
 ## Running it
 
@@ -354,7 +354,7 @@ knitr::kable(
 )
 ```
 
-- One call to `Q()` costs about the same as one E-step — but `Q()` is called **`r round(calls[["Q"]] / n_iter, 1)` times per iteration**, the E-step once.
+- One call to `Q()` costs about the same as one E-step  but `Q()` is called **`r round(calls[["Q"]] / n_iter, 1)` times per iteration**, the E-step once.
 - `dt_ls()` is not an extra cost: it is the density inside `Q()` and `e_step()` (2 calls in each), so its row overlaps with theirs.
 - The gradient is almost free.
 
@@ -419,7 +419,7 @@ ggplot(steps_long, aes(iter, value, colour = N)) +
   theme(legend.position = "top")
 ```
 
-- The accepted step size is almost **constant**: $2^{-8} \approx `r signif(2^-8, 2)`$ for $N = 400$ (one iteration needs $2^{-9}$) and $2^{-11}$ or $2^{-12}$ for $N = 5000$ — it scales like $1/N$, because the gradient is a sum over $N$ points.
+- The accepted step size is almost **constant**: $2^{-8} \approx `r signif(2^-8, 2)`$ for $N = 400$ (one iteration needs $2^{-9}$) and $2^{-11}$ or $2^{-12}$ for $N = 5000$  it scales like $1/N$, because the gradient is a sum over $N$ points.
 - The *move* $s\,\|g\|$ shrinks only because the gradient does. Starting the backtracking at $s = 1$ in every iteration is wasted work.
 
 [The first halvings are always rejected. Version 2 therefore starts the backtracking at $s = 2^{-5}$: still well above every accepted step, so the line search adapts to $N$ as before, but the five longest steps are never tried.]{.lesson}
@@ -442,7 +442,7 @@ source("R/load.R")
 $$
 Q(\theta \mid \hat\theta) = \sum_i \gamma_i \big(\log p + \log f_1(x_i)\big) + (1 - \gamma_i)\big(\log(1-p) + \log f_2(x_i)\big),
 $$
-but version 1 computes the density with `dt()` and then takes `log()` of it — a detour through the density scale.
+but version 1 computes the density with `dt()` and then takes `log()` of it  a detour through the density scale.
 
 . . .
 
@@ -454,7 +454,7 @@ With $a_i = \log p + \log f_1(x_i)$ and $b_i = \log(1-p) + \log f_2(x_i)$:
 
 | Building block | Version 1 (density scale) | Log scale |
 |---|---|---|
-| $Q$ | `log(p * dt(...))`, twice per point | $\sum_i \gamma_i a_i + (1-\gamma_i) b_i$ — no `dt()`, no `log()` |
+| $Q$ | `log(p * dt(...))`, twice per point | $\sum_i \gamma_i a_i + (1-\gamma_i) b_i$  no `dt()`, no `log()` |
 | E-step | $\gamma_i = \frac{p f_1}{p f_1 + (1-p) f_2}$ | $\gamma_i = \frac{1}{1 + e^{b_i - a_i}}$ = `plogis(a - b)` |
 | log-likelihood | `sum(log(dtmix(...)))` | $\log(e^{a_i} + e^{b_i})$ with the log-sum-exp trick |
 
@@ -516,7 +516,7 @@ With $a_i = \log p + \log f_1(x_i)$ and $b_i = \log(1-p) + \log f_2(x_i)$:
 - `fit()`: the GEM algorithm
 - `print()`
 
-**`tmix_density`**: version 1 — `loglik()`, `e_step()` and `Q()` with `dt()`.
+**`tmix_density`**: version 1  `loglik()`, `e_step()` and `Q()` with `dt()`.
 
 **`tmix_log`**: the same three methods on log scale, plus the constant $c(\nu)$ stored in the object.
 
@@ -552,7 +552,7 @@ rbind(density = fit(model_d),
       log     = fit(model_l))
 ```
 
-Same algorithm, same estimate — only the way the densities are computed differs. Both classes use the new first step $2^{-5}$; the halving passes through the same step sizes as before, so the estimate is also the same as in version 1 (`r formatC(max(abs(fit(model_l) - fit_v1)), format = "e", digits = 0)` apart).
+Same algorithm, same estimate  only the way the densities are computed differs. Both classes use the new first step $2^{-5}$; the halving passes through the same step sizes as before, so the estimate is also the same as in version 1 (`r formatC(max(abs(fit(model_l) - fit_v1)), format = "e", digits = 0)` apart).
 
 ## Do the two classes agree?
 
@@ -620,7 +620,7 @@ knitr::kable(
 ```
 
 - The whole fit is **`r round(as.numeric(bm_classes$median[1] / bm_classes$median[2]), 1)` times faster** on log scale, with the same estimate and the same number of iterations. Both classes start the line search at $2^{-5}$, so this is the effect of the log scale alone.
-- `Q()` got the largest speed-up — and `Q()` was what dominated the profile.
+- `Q()` got the largest speed-up  and `Q()` was what dominated the profile.
 
 ## Where is the time now?
 
@@ -650,7 +650,7 @@ knitr::kable(
 )
 ```
 
-- **Fewer calls:** starting at $2^{-5}$ saves `r round((calls[["Q"]] - calls_log[["Q"]]) / n_iter)` evaluations of $Q$ per iteration — `r round(calls_log[["Q"]] / n_iter, 1)` instead of `r round(calls[["Q"]] / n_iter, 1)`, with the same `r n_iter` iterations. (Not all five skipped steps cost a call before: the longest ones made $\sigma$ negative and were rejected without evaluating $Q$.) **Cheaper calls:** the log scale.
+- **Fewer calls:** starting at $2^{-5}$ saves `r round((calls[["Q"]] - calls_log[["Q"]]) / n_iter)` evaluations of $Q$ per iteration  `r round(calls_log[["Q"]] / n_iter, 1)` instead of `r round(calls[["Q"]] / n_iter, 1)`, with the same `r n_iter` iterations. (Not all five skipped steps cost a call before: the longest ones made $\sigma$ negative and were rejected without evaluating $Q$.) **Cheaper calls:** the log scale.
 - $Q$ in the line search is still about `r round(prof_log$by.total['"Q.tmix_log"', "total.pct"])`% of the time, now spent in `log1p()` inside `ldt_ls()` instead of in `dt()`: the step is still halved about `r round(calls_log[["Q"]] / n_iter - 2)` times per iteration, from $2^{-5}$ down to $2^{-11}$ or $2^{-12}$.
 
 [The profile pointed at `dt()`, and the log scale removed it: $Q$ became `r round(med[["Q_density"]] / med[["Q_log"]])` times cheaper, the whole fit `r round(as.numeric(bm_classes$median[1] / bm_classes$median[2]))` times faster, and the answer is the same. The S3 design made the comparison fair: one GEM algorithm for both implementations. Starting the line search at $2^{-5}$ took `r round(100 * (1 - calls_log[["Q"]] / calls[["Q"]]))`% of the $Q$ evaluations away, but hotspot 1 is not gone: the line search still restarts in every iteration.]{.lesson}
@@ -750,7 +750,7 @@ Median time in ms, sorted by the time for the largest $N$.
 
 - **The methods scale linearly in $N$** (parallel lines): they spend their time on passes over the data, and the number of passes hardly depends on $N$. The exception is CG, which is erratic: the number of evaluations it needs varies a lot from data set to data set.
 - **The quasi-Newton methods are fastest.** They use curvature information and need few evaluations of $\ell$.
-- **The GEM is clearly slower than the quasi-Newton methods.** It converges linearly, and each iteration costs about `r round(calls_log[["Q"]] / n_iter)` evaluations of $Q$ in the line search, even with the shorter first step — hotspot 1 from the profile.
+- **The GEM is clearly slower than the quasi-Newton methods.** It converges linearly, and each iteration costs about `r round(calls_log[["Q"]] / n_iter)` evaluations of $Q$ in the line search, even with the shorter first step  hotspot 1 from the profile.
 - **Nelder-Mead is slowest of the stable methods**: it uses no gradient and needs hundreds of evaluations.
 
 # Robustness: $t$ mixture vs Gaussian mixture
