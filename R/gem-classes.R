@@ -2,8 +2,11 @@
 #
 # Same algorithm as version 1 (gem.R), but it only talks to the model through
 # e_step(), Q() and grad_Q(), so it works for every subclass of "tmix".
+#
+# The backtracking starts at step0 = 2^-5 instead of 1: the accepted steps are
+# far below 1 (they scale like 1 / N), so the first halvings were wasted Q calls.
 
-create_gem_step <- function(model, step0 = 1, d = 0.5, c = 0.1) {
+create_gem_step <- function(model, step0 = 2^-5, d = 0.5, c = 0.1) {
   force(model)
 
   function(par) {

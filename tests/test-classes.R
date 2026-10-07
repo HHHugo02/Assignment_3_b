@@ -97,3 +97,17 @@ test_that("the log scale survives an extreme outlier where the density scale fai
   expect_true(is.nan(tail(e_step(tmix_density(x_out, nu), par_true), 1)))
   expect_equal(tail(e_step(tmix_log(x_out, nu), par_true), 1), 1)
 })
+
+# The Gaussian mixture used in the outlier comparison ----------------------------
+
+test_that("Gaussian EM: the log-likelihood never decreases and the fit is a stationary point", {
+  step <- create_em_gauss_step(x)
+  par <- par0
+  ll <- loglik_gauss(par, x)
+  for (i in 1:50) {
+    par <- step(par)
+    ll <- c(ll, loglik_gauss(par, x))
+  }
+  expect_true(all(diff(ll) >= -1e-8))
+  expect_equal(numDeriv::grad(function(p) loglik_gauss(p, x), fit_gauss(x, eps = 1e-14)), rep(0, 5), tolerance = 1e-3)
+})

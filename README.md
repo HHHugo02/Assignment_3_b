@@ -22,6 +22,7 @@ robustness study, ...) is kept in `old/`.
 | `R/gem.R` | version 1: the GEM step (`create_gem_step(x, nu)`) and `gem()` |
 | `R/tmix-classes.R` | version 2: S3 classes `tmix` (parent), `tmix_density` and `tmix_log` |
 | `R/gem-classes.R` | version 2: the GEM step for any `tmix` model and `fit()` |
+| `R/gauss-mix.R` | two-component Gaussian mixture fitted by EM (`fit_gauss()`), for the outlier comparison |
 | `R/profiling-tools.R` | `count_calls()`, `profile_expr()`, `profile_lines()` |
 | `R/profiling-demo.R` | interactive `profvis` demo for the exam |
 | `tests/test-simple.R` | tests for version 1 |
