@@ -441,6 +441,11 @@ ggplot(paths, aes(mu1, mu2, group = start, colour = end)) +
 - **`r n_end[[2]]`** end at a local maximum with the labels swapped, $\ell = `r formatC(max(ll_swapped), format = "f", digits = 2)`$: not the same fit, because $\nu_1 \neq \nu_2$.
 - **`r n_end[[3]]`** collapse to one component ($p \to 0$ or $1$).
 :::
+::::
+
+## Does the step size matter?
+
+:::: {.columns}
 ::: {.column width="50%"}
 ```{r}
 #| label: plot-start-steps
@@ -459,7 +464,8 @@ ggplot(accepted, aes(log2_step, fill = end)) +
   theme(legend.position = "top", legend.text = element_text(size = 12), legend.title = element_text(size = 12),
         legend.key.size = unit(0.9, "lines"))
 ```
-
+:::
+::: {.column width="50%"}
 **How long are the accepted steps?** Only `r n_long` of `r nrow(accepted)` are longer than $2^{-5}$, wherever the fit starts and ends. The same 50 fits with a shorter first step in the backtracking:
 
 ```{r}
@@ -468,13 +474,12 @@ ggplot(accepted, aes(log2_step, fill = end)) +
 start_tab <- data.frame(
   step0 = c("$1$", "$2^{-5}$", "$2^{-8}$"),
   n_Q   = formatC(sapply(runs, function(r) sum(r$n_Q)), format = "d"),
-  iter  = formatC(sapply(runs, function(r) sum(r$iter)), format = "d"),
-  same  = c("", paste(sapply(runs[-1], function(r) sum(r$end == runs[["1"]]$end)), "of 50"))
+  iter  = formatC(sapply(runs, function(r) sum(r$iter)), format = "d")
 )
 start_tab[2, ] <- paste0("**", start_tab[2, ], "**")
 knitr::kable(
-  start_tab, row.names = FALSE, align = c("l", "r", "r", "r"),
-  col.names = c("First step", "Evaluations of $Q$", "Iterations", "Same end point as with $s = 1$")
+  start_tab, row.names = FALSE, align = c("l", "r", "r"),
+  col.names = c("First step", "Evaluations of $Q$", "Iterations")
 )
 ```
 :::
