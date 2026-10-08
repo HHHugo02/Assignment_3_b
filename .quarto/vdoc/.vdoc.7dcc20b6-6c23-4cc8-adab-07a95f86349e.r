@@ -1,31 +1,31 @@
----
-title: "EM for Mixtures of t-Distributions"
-subtitle: "Computational Statistics, Assignment 3, topic B"
-format:
-  revealjs:
-    theme: default
-    css: styles.css
-    slide-number: true
-    smaller: true
-    scrollable: true
-    code-overflow: wrap
-    highlight-style: github
-    embed-resources: true
-    width: 1200
-    height: 750
-execute:
-  echo: true
-  warning: false
-  message: false
-knitr:
-  opts_chunk:
-    fig.width: 10
-    fig.height: 4.6
-    fig.align: center
-    comment: "#>"
----
-
-```{r}
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
 #| label: setup
 #| include: false
 
@@ -39,32 +39,32 @@ options(digits = 5, width = 110)
 show_fun <- function(name) {
   paste0(name, " <- ", paste(as.character(attr(get(name), "srcref")), collapse = "\n"))
 }
-```
-
-## Roadmap
-
-1. **A simple implementation**  the formulas coded directly, on the density scale, with R's `dt()`
-2. **Is it correct?**  a test against `optim()`
-3. **Where is it slow?**  profiling with `Rprof` and `profvis`
-4. **A faster implementation**  a log-scale version with a shorter first step in the line search, and an S3 design with two classes so the two implementations share the same GEM code
-5. **How good is it?**  `bench::press` against R's own optimizers
- 
-# A simple implementation
-
-## Two-component mixture of $t$-distributions
-
-$$
-f(x \mid \theta) = p\, f(x \mid \mu_1, \sigma_1^2, \nu_1) + (1 - p)\, f(x \mid \mu_2, \sigma_2^2, \nu_2),
-\qquad \theta = (p, \mu_1, \mu_2, \sigma_1, \sigma_2)
-$$
-
-with $f(x \mid \mu, \sigma^2, \nu) = \frac{\Gamma((\nu+1)/2)}{\sqrt{\pi\nu\sigma^2}\,\Gamma(\nu/2)}\left(1 + \frac{(x-\mu)^2}{\nu\sigma^2}\right)^{-(\nu+1)/2}$ and $\nu_1, \nu_2$ fixed.
-
-:::: {.columns}
-::: {.column width="45%"}
-Simulated data as in the assignment:
-
-```{r}
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
 #| label: sim-data
 set.seed(42)
 nu <- c(5, 10)
@@ -73,12 +73,12 @@ par_true <- c(p = 0.6, mu1 = 0, mu2 = 3,
 x <- rtmix(400, par_true, nu)
 par0 <- default_start(x)
 round(par0, 3)
-```
-
-:::
-
-::: {.column width="55%"}
-```{r}
+#
+#
+#
+#
+#
+#
 #| label: plot-data
 #| echo: false
 #| fig-width: 6.5
@@ -89,97 +89,97 @@ ggplot(data.frame(x), aes(x)) +
   geom_line(data = data.frame(x = grid, d = dtmix(grid, par_true, nu)), aes(x, d), linewidth = 1) +
   labs(y = "density", title = "N = 400, true density")
 ```
-:::
-::::
-
-## Missing data: the component labels
-
-**Idea:** if we knew which component each $x_i$ came from, estimation would be easy  just like the two coins in lecture 9.
-
-Introduce the (unobserved) label $Z_i \in \{1, 2\}$:
-$$
-P(Z_i = 1) = p, \qquad X_i \mid Z_i = j \sim t(\mu_j, \sigma_j^2, \nu_j).
-$$
-
-Write $f_j(x) = f(x \mid \mu_j, \sigma_j^2, \nu_j)$. The joint density of one complete observation $(x_i, z_i)$ is
-$$
-f(x_i, z_i \mid \theta) = \big(p\, f_1(x_i)\big)^{\mathbf{1}(z_i = 1)} \big((1 - p)\, f_2(x_i)\big)^{\mathbf{1}(z_i = 2)}.
-$$
-
-. . .
-
-**Check:** summing over $z_i \in \{1, 2\}$ gives $p f_1(x_i) + (1-p) f_2(x_i)$  exactly the mixture density. So $(X, Z)$ is a valid complete-data model for our observed $X$.
-
-**Complete-data log-likelihood** (what we could maximize if $Z$ were observed):
-$$
-\ell_c(\theta) = \sum_{i=1}^N \mathbf{1}(Z_i = 1)\big(\log p + \log f_1(x_i)\big) + \mathbf{1}(Z_i = 2)\big(\log(1-p) + \log f_2(x_i)\big)
-$$
-
-::: notes
-The trick of EM is to choose missing data such that the complete-data problem is easy. Here the missing data are the labels. The check that summing out z gives the mixture density is what makes this a legal choice of complete data.
-:::
-
-## E-step: from $\ell_c$ to $Q$
-
-$Q(\theta \mid \hat\theta) = E_{\hat\theta}\big(\ell_c(\theta) \mid X = x\big)$  average $\ell_c$ over what the labels could be, given the data and the current guess $\hat\theta$.
-
-**Step 1  linearity.** Given $x$, the terms $\log p + \log f_1(x_i)$ are just numbers, so the expectation only hits the indicators:
-$$
-E_{\hat\theta}\big(\mathbf{1}(Z_i = 1) \mid X = x\big) = P_{\hat\theta}(Z_i = 1 \mid X_i = x_i) =: \gamma_i
-$$
-
-**Step 2  Bayes' formula.** With $\hat f_j$ the density of component $j$ at the current guess $(\hat\mu_j, \hat\sigma_j)$:
-$$
-\gamma_i = \frac{P(Z_i = 1)\, f(x_i \mid Z_i = 1)}{f(x_i)} = \frac{\hat p\, \hat f_1(x_i)}{\hat p\, \hat f_1(x_i) + (1 - \hat p)\, \hat f_2(x_i)}
-$$
-
-**Result:**
-$$
-Q(\theta \mid \hat\theta) = \sum_{i=1}^N \gamma_i \big(\log p + \log f_1(x_i)\big) + (1 - \gamma_i)\big(\log(1-p) + \log f_2(x_i)\big)
-$$
-
-
-## M-step: maximize $Q$  what can be solved?
-
-$Q$ splits into three parts that can be maximized separately:
-$$
-Q = \underbrace{\sum_i \gamma_i \log p + (1 - \gamma_i)\log(1-p)}_{\text{only } p}
-  + \underbrace{\sum_i \gamma_i \log f_1(x_i)}_{\text{only } \mu_1, \sigma_1}
-  + \underbrace{\sum_i (1 - \gamma_i) \log f_2(x_i)}_{\text{only } \mu_2, \sigma_2}
-$$
-
-**$p$:** $\ \partial_p Q = \frac{\sum_i \gamma_i}{p} - \frac{N - \sum_i \gamma_i}{1 - p} = 0 \;\Rightarrow\; p = \frac{1}{N}\sum_i \gamma_i$  closed form.
-
-. . .
-
-**$(\mu_1, \sigma_1)$:** a *weighted* $t$ log-likelihood. With $r = x - \mu_1$ and $\log f_1(x) = c(\nu_1) - \log \sigma_1 - \frac{\nu_1 + 1}{2}\log\big(1 + \frac{r^2}{\nu_1 \sigma_1^2}\big)$, the chain rule gives
-$$
-\partial_{\mu_1} \log f_1(x) = \frac{w\, r}{\sigma_1^2},
-\qquad
-\partial_{\sigma_1} \log f_1(x) = -\frac{1}{\sigma_1} + \frac{w\, r^2}{\sigma_1^3},
-\qquad w = \frac{\nu_1 + 1}{\nu_1 + r^2/\sigma_1^2},
-$$
-so
-$$
-\partial_{\mu_1} Q = \sum_i \gamma_i \frac{w_{i1} r_{i1}}{\sigma_1^2}, \qquad
-\partial_{\sigma_1} Q = \sum_i \frac{\gamma_i}{\sigma_1}\left(\frac{w_{i1} r_{i1}^2}{\sigma_1^2} - 1\right) \qquad (\text{component 2: } 1 - \gamma_i).
-$$
-
-. . .
-
-Setting $\partial_{\mu_1} Q = 0$ and $\partial_{\sigma_1} Q = 0$ gives
-$$
-\mu_1 = \frac{\sum_i \gamma_i w_{i1} x_i}{\sum_i \gamma_i w_{i1}}, \qquad
-\sigma_1^2 = \frac{\sum_i \gamma_i w_{i1} r_{i1}^2}{\sum_i \gamma_i}
-$$
- but $w_{i1}$ depends on $\mu_1$ and $\sigma_1$ themselves: fixed-point equations, not formulas.
-
-
-## One gradient step  but how long?
-
-First iteration from `par0`: E-step, update $p$, and then move a step of length $s$ along the gradient, $\theta + s\, g$. How much does $Q$ change?
-
-```{r}
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
 #| label: fixed-steps
 #| echo: false
 gam <- e_step(par0, x, nu)
@@ -188,9 +188,9 @@ par1[1] <- mean(gam)                       # exact M-step for p
 g <- grad_Q(par1, gam, x, nu)
 g[1] <- 0
 change_in_Q <- function(s) Q(par1 + s * g, gam, x, nu) - Q(par1, gam, x, nu)
-```
-
-```{r}
+#
+#
+#
 #| label: plot-fixed-steps
 #| echo: false
 #| fig-height: 3.2
@@ -208,25 +208,25 @@ ggplot(step_df, aes(s, change)) +
   annotate("text", x = 0.0004, y = -2.2, label = "too short:\nbarely moves", size = 4.5, hjust = 0) +
   annotate("text", x = s_zero + 0.0002, y = 2.2, label = "too long:\nQ decreases", size = 4.5, hjust = 0, colour = "#d95f02") +
   labs(x = "step size s", y = "change in Q")
-```
-
-. . .
-
-**Solution  backtracking:** start with a long step and halve it until $Q$ has increased enough (Armijo condition $Q(\theta + s g) \ge Q(\theta) + c\, s\, \|g\|^2$).
-
-## Running it
-
-:::: {.columns}
-::: {.column width="45%"}
-```{r}
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
 #| label: run-gem
 fit <- gem(x, nu)
 fit
 loglik(fit, x, nu)
 ```
-:::
-::: {.column width="55%"}
-```{r}
+#
+#
+#
 #| label: plot-fit
 #| echo: false
 #| fig-width: 6.5
@@ -245,18 +245,18 @@ ggplot(data.frame(x), aes(x)) +
   scale_linetype_manual(values = c(2, 2, 1, 3)) +
   labs(colour = NULL, linetype = NULL, y = "density", title = "Fitted mixture and true density")
 ```
-:::
-::::
-
-# Is it correct?
-
-## A test against `optim()`
-
-`optim()` is R's general-purpose optimizer. It maximizes the observed log-likelihood $\ell(\theta)$ directly. If the GEM is implemented correctly, the two must find the same maximum.
-
-Both are started at the same point (`default_start()`):
-
-```{r}
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
 #| label: test-optim
 #| echo: false
 par_hat <- gem(x, nu, eps = 1e-14)
@@ -278,15 +278,15 @@ knitr::kable(
   col.names = c("$p$", "$\\mu_1$", "$\\mu_2$", "$\\sigma_1$", "$\\sigma_2$", "$\\ell(\\hat\\theta)$"),
   align = "r"
 )
-```
-
-Two different algorithms agree on the estimate and on the log-likelihood.
-
-# Where is it slow?
-
-## Why? Number of calls × cost per call
-
-```{r}
+#
+#
+#
+#
+#
+#
+#
+#
+#
 #| label: prof-setup
 #| include: false
 set.seed(7)
@@ -297,11 +297,11 @@ bm_fit <- bench::mark(gem(x_big, nu), iterations = 5)
 
 prof_file <- profile_expr(for (i in 1:5) gem(x_big, nu))
 prof <- summaryRprof(prof_file)
-```
-
-The profile says *where* the time goes. To see *why*, count how often each building block is called in one fit ($N = 5000$, `r n_iter` iterations) and time a single call with `bench::mark`:
-
-```{r}
+#
+#
+#
+#
+#
 #| label: prof-calls
 #| echo: false
 calls <- count_calls(gem(x_big, nu), c("e_step", "Q", "grad_Q", "dt_ls"))
@@ -332,24 +332,24 @@ knitr::kable(
   col.names = c("Function", "Calls per fit", "Calls per iteration", "Time per call (ms)",
                 "Total time (ms)", "Share of the fit")
 )
-```
-
-- One call to `Q()` costs about the same as one E-step  but `Q()` is called **`r round(calls[["Q"]] / n_iter, 1)` times per iteration**, the E-step once.
-- `dt_ls()` is not an extra cost: it is the density inside `Q()` and `e_step()` (2 calls in each), so its row overlaps with theirs.
-- The gradient is almost free.
-
-## Conclusion: two hotspots
-
-1. **The line search.** $Q$ is evaluated `r round(calls[["Q"]] / n_iter, 1)` times per iteration (`r calls[["Q"]]` calls in `r n_iter` iterations), because the backtracking restarts from step size 1 in *every* iteration and needs about `r round(calls[["Q"]] / n_iter - 2)` halvings before the step is short enough ($\approx 2^{-`r round(calls[["Q"]] / n_iter - 2)`}$).
-2. **`dt()`.** Most of the time is spent inside R's `dt()`. Every $Q$ and every E-step evaluates the $t$-density twice for all $N$ points: `r calls[["dt_ls"]]` density evaluations of length `r length(x_big)` per fit.
-
-::: notes
-Transition: first a look at the step sizes behind hotspot 1, which gives a cheap fix (start the line search at 2^-5). Hotspot 2 (dt) is then attacked with a log-scale implementation. The new profile at the end shows what is left of hotspot 1.
-:::
-
-## Does the starting point matter?
-
-```{r}
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
 #| label: start-points
 #| echo: false
 # Replay the GEM iterations and recover the accepted step size s in each one:
@@ -408,13 +408,13 @@ accepted <- paths[paths$iter > 0, ]
 accepted$log2_step <- round(log2(accepted$step))
 n_long <- sum(accepted$log2_step > -5)
 end_cols <- setNames(c("#2c7fb8", "#d95f02", "#1b9e77"), end_levels)
-```
-
-**50 starting points:** `default_start(x)` and 49 random ones, $p \sim U(0.1, 0.9)$, $\mu_j \sim U(\min x, \max x)$, $\sigma_j \sim \mathrm{sd}(x) \cdot U(0.2, 2)$.
-
-:::: {.columns}
-::: {.column width="50%"}
-```{r}
+#
+#
+#
+#
+#
+#
+#
 #| label: plot-start-paths
 #| echo: false
 #| fig-width: 6
@@ -433,21 +433,21 @@ ggplot(paths, aes(mu1, mu2, group = start, colour = end)) +
   scale_colour_manual(values = end_cols) +
   labs(x = expression(mu[1]), y = expression(mu[2]), colour = "ends in") +
   theme(legend.position = "top", legend.text = element_text(size = 12), legend.title = element_text(size = 12))
-```
-
-**Do they all find the maximum? No.**
-
-- **`r n_end[[1]]` of 50** end at the same estimate as the default start ($\times$), $\ell = `r formatC(loglik(par_hat, x, nu), format = "f", digits = 2)`$.
-- **`r n_end[[2]]`** end at a local maximum with the labels swapped, $\ell = `r formatC(max(ll_swapped), format = "f", digits = 2)`$: not the same fit, because $\nu_1 \neq \nu_2$.
-- **`r n_end[[3]]`** collapse to one component ($p \to 0$ or $1$).
-:::
-::::
-
-## Does the step size matter?
-
-:::: {.columns}
-::: {.column width="50%"}
-```{r}
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
 #| label: plot-start-steps
 #| echo: false
 #| fig-width: 6
@@ -464,11 +464,11 @@ ggplot(accepted, aes(log2_step, fill = end)) +
   theme(legend.position = "top", legend.text = element_text(size = 12), legend.title = element_text(size = 12),
         legend.key.size = unit(0.9, "lines"))
 ```
-:::
-::: {.column width="50%"}
-**How long are the accepted steps?** Only `r n_long` of `r nrow(accepted)` are longer than $2^{-5}$, wherever the fit starts and ends. The same 50 fits with a shorter first step in the backtracking:
-
-```{r}
+#
+#
+#
+#
+#
 #| label: tab-start-steps
 #| echo: false
 start_tab <- data.frame(
@@ -482,122 +482,122 @@ knitr::kable(
   col.names = c("First step", "Evaluations of $Q$", "Iterations")
 )
 ```
-:::
-::::
-
-# A faster implementation: the log scale
-
-```{r}
+#
+#
+#
+#
+#
+#
 #| label: load-s3
 #| include: false
 fit_v1 <- fit # the version 1 estimate, before fit() becomes a generic
 # Version 2 of the code: the building blocks become S3 generics (replaces the plain functions)
 source("R/load.R")
-```
-
-## From the profile to a plan
-
-**What the profile showed:** `Q()` takes `r round(prof$by.total['"Q"', "total.pct"])`% of the time, and `dt()` alone `r round(prof$by.self['"dt"', "self.pct"])`%.
-
-**Observation:** $Q$ only needs **log**-densities,
-$$
-Q(\theta \mid \hat\theta) = \sum_i \gamma_i \big(\log p + \log f_1(x_i)\big) + (1 - \gamma_i)\big(\log(1-p) + \log f_2(x_i)\big),
-$$
-but version 1 computes the density with `dt()` and then takes `log()` of it .
-
-. . .
-
-**Idea:** write the log-density out and compute it directly,
-$$
-\log f(x) = \underbrace{\log\Gamma\big(\tfrac{\nu+1}{2}\big) - \log\Gamma\big(\tfrac{\nu}{2}\big) - \tfrac12\log(\pi\nu)}_{c(\nu)\text{: a constant, computed once}} - \log\sigma - \tfrac{\nu+1}{2}\log\Big(1 + \tfrac{(x-\mu)^2}{\nu\sigma^2}\Big).
-$$
-With $a_i = \log p + \log f_1(x_i)$ and $b_i = \log(1-p) + \log f_2(x_i)$:
-
-
-. . .
-
-**And hotspot 1:** the line search now starts at $s = 2^{-5}$ instead of $1$.
-
-## The S3 design: two classes with a common parent
-
-:::: {.columns}
-::: {.column width="48%"}
-```{=html}
-<svg viewBox="0 0 520 400" style="width: 100%; max-width: 540px;" xmlns="http://www.w3.org/2000/svg" font-family="monospace" font-size="15" role="img" aria-label="Class diagram: tmix is the parent of tmix_density and tmix_log">
-  <g stroke="#2c7fb8" stroke-width="1.5" fill="white">
-    <rect x="150" y="8" width="220" height="150"/>
-    <rect x="150" y="8" width="220" height="32" fill="#dcebf7"/>
-    <line x1="150" y1="92" x2="370" y2="92"/>
-    <rect x="8" y="230" width="230" height="162"/>
-    <rect x="8" y="230" width="230" height="32" fill="#dcebf7"/>
-    <line x1="8" y1="294" x2="238" y2="294"/>
-    <rect x="282" y="230" width="230" height="162"/>
-    <rect x="282" y="230" width="230" height="32" fill="#dcebf7"/>
-    <line x1="282" y1="294" x2="512" y2="294"/>
-    <polyline points="123,230 123,200 215,200 215,172" fill="none"/>
-    <polygon points="215,158 207,172 223,172"/>
-    <polyline points="397,230 397,200 305,200 305,172" fill="none"/>
-    <polygon points="305,158 297,172 313,172"/>
-  </g>
-  <g fill="#222">
-    <text x="260" y="30" text-anchor="middle" font-weight="bold">tmix</text>
-    <text x="162" y="62">x   (data)</text>
-    <text x="162" y="82">nu  (shape parameters)</text>
-    <text x="162" y="114">grad_Q()</text>
-    <text x="162" y="132">fit()</text>
-    <text x="123" y="252" text-anchor="middle" font-weight="bold">tmix_density</text>
-    <text x="20" y="282" fill="#777">(no extra fields)</text>
-    <text x="20" y="316">loglik()</text>
-    <text x="20" y="334">e_step()</text>
-    <text x="20" y="352">Q()</text>
-    <text x="20" y="380" fill="#2c7fb8">density scale: dt()</text>
-    <text x="397" y="252" text-anchor="middle" font-weight="bold">tmix_log</text>
-    <text x="294" y="282">log_const  (= c(nu))</text>
-    <text x="294" y="316">loglik()</text>
-    <text x="294" y="334">e_step()</text>
-    <text x="294" y="352">Q()</text>
-    <text x="294" y="380" fill="#2c7fb8">log scale: log1p()</text>
-  </g>
-</svg>
-```
-:::
-::: {.column width="52%"}
-**`tmix`** (parent) holds what is the same for both:
-
-- the data `x` and the shape parameters `nu`
-- `grad_Q()`: the gradient is the same formula
-- `fit()`: the GEM algorithm
-
-**`tmix_density`**: `loglik()`, `e_step()` and `Q()` with slow `dt()`.
-
-**`tmix_log`**: A new version of the 3 methods using log density, and the constant $c(\nu)$ stored in the object.
-
-:::
-::::
-
-
-
-## One GEM algorithm for both classes
-
-The GEM fit is slighty modified to take model as input, so the same `fit()` works for both classes.
-
-Make the two models and fit them:
-
-```{r}
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
 #| label: s3-fit
 model_d <- tmix_density(x, nu)   # density scale, dt()
 model_l <- tmix_log(x, nu)       # log scale
 
 rbind(density = fit(model_d),
       log     = fit(model_l))
-```
-
-
-## Do the two classes agree?
-
-The density class is the tested version 1, so the log class is tested against it:
-
-```{r}
+#
+#
+#
+#
+#
+#
+#
+#
 #| label: s3-agree
 par_test <- c(0.4, -0.5, 2.5, 1.3, 0.9)
 gam_test <- e_step(model_d, par0)
@@ -608,13 +608,13 @@ test_that("the log class computes the same as the density class", {
   expect_equal(Q(model_l, par_test, gam_test), Q(model_d, par_test, gam_test))
   expect_equal(fit(model_l), fit(model_d), tolerance = 1e-8)
 })
-```
-
-## Is it faster?
-
-The two classes timed with `bench::mark` on the data from the profiling ($N = 5000$). `bench::mark` also checks that both give the same estimate.
-
-```{r}
+#
+#
+#
+#
+#
+#
+#
 #| label: s3-bench
 #| echo: false
 model_density <- tmix_density(x_big, nu)
@@ -647,15 +647,15 @@ knitr::kable(
   faster_tab, row.names = FALSE, align = c("l", "r", "r", "r"),
   col.names = c("", "`tmix_density` (ms)", "`tmix_log` (ms)", "Speed-up")
 )
-```
-
-- The whole fit is **`r round(as.numeric(bm_classes$median[1] / bm_classes$median[2]), 1)` times faster** on log scale, with the same estimate and the same number of iterations. Both classes start the line search at $2^{-5}$, so this is the effect of the log scale alone.
-
-## Where is the time now? {.nostretch}
-
-Profiling comparison
-
-```{r}
+#
+#
+#
+#
+#
+#
+#
+#
+#
 #| label: s3-profile
 #| echo: false
 prof_file_log <- profile_expr(for (i in 1:15) fit(model_log))
@@ -677,9 +677,9 @@ knitr::kable(
   col.names = c("Function", "Calls per fit, version 1", "Calls per fit, version 2",
                 "Share of time, version 1", "Share of time, version 2")
 )
-```
-
-```{r}
+#
+#
+#
 #| label: plot-prof-compare
 #| echo: false
 #| fig-height: 3.2
@@ -706,30 +706,30 @@ ggplot(prof_cmp, aes(x = pct, y = fun, fill = type)) +
   facet_wrap(~version, scales = "free_y") +
   scale_fill_manual(values = c(total = "grey70", self = "steelblue"), breaks = c("total", "self")) +
   labs(x = "share of the run time (%)", y = NULL, fill = NULL)
-```
-
-- **Fewer calls and cheaper calls:** starting at $2^{-5}$ saves `r round((calls[["Q"]] - calls_log[["Q"]]) / n_iter)` evaluations of $Q$ per iteration  `r round(calls_log[["Q"]] / n_iter, 1)` instead of `r round(calls[["Q"]] / n_iter, 1)`, with the same `r n_iter` iterations.
-
-# How good is it? Benchmark against R's optimizers
-
-## The competitors
-
-R has several general-purpose optimizers. They do not use the EM idea: they maximize the observed log-likelihood $\ell(\theta)$ directly.
-
-| Method | Function | Type |
-|---|---|---|
-| GEM | `fit()` (ours) | E-step + one gradient step on $Q$ with backtracking |
-| BFGS | `optim(method = "BFGS")` | quasi-Newton |
-| L-BFGS-B | `optim(method = "L-BFGS-B")` | quasi-Newton, limited memory |
-| CG | `optim(method = "CG")` | conjugate gradient |
-| Nelder-Mead | `optim(method = "Nelder-Mead")` | simplex, uses no gradient |
-| nlminb | `nlminb()` | quasi-Newton (PORT library) |
-
-## Do they all find the same maximum?
-
-On the data from the profiling ($N = 5000$):
-
-```{r}
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
 #| label: methods-accuracy
 #| echo: false
 methods <- list(
@@ -754,13 +754,13 @@ knitr::kable(
   col.names = c("Method", "$p$", "$\\mu_1$", "$\\mu_2$", "$\\sigma_1$", "$\\sigma_2$",
                 "Evaluations", "Distance to best $\\ell$")
 )
-```
-
-Evaluations: iterations for the GEM, function evaluations for the others.
-
-## `bench::press`: time as a function of $N$
-
-```{r}
+#
+#
+#
+#
+#
+#
+#
 #| label: press-methods
 #| echo: false
 press <- bench::press(N = c(500, 2000, 8000, 32000), {
@@ -776,9 +776,9 @@ press <- bench::press(N = c(500, 2000, 8000, 32000), {
     check = FALSE, min_iterations = 3
   )
 })
-```
-
-```{r}
+#
+#
+#
 #| label: plot-press-methods
 #| echo: false
 #| fig-height: 3.6
@@ -788,25 +788,25 @@ ggplot(press_df, aes(N, ms, colour = method)) +
   geom_line(linewidth = 0.9) + geom_point(size = 2) +
   scale_x_log10(breaks = unique(press_df$N)) + scale_y_log10() +
   labs(y = "median time (ms)", colour = NULL)
-```
-
-## Why is the GEM slower than the quasi-Newton methods?
-
-All the methods spend their time the same way: on passes over the data in the same R functions. So the speed is decided by **how many passes** a method needs.
-
-- **The GEM takes many small steps.** It follows the gradient, which only gives a direction, and converges slowly: `r n_iter` iterations for $N = 5000$.
-- **Each step is expensive.** The step length has to be found by trial and error, about `r round(calls_log[["Q"]] / n_iter)` evaluations of $Q$ per iteration.
-- **The quasi-Newton methods take few, good steps.** They also use the curvature, so they know both the direction and how far to go.
-
-# Robustness: $t$ mixture vs Gaussian mixture
-
-## A Gaussian mixture for comparison
-
-The assignment suggests comparing the location and scale estimates with those from a two-component **Gaussian** mixture, in particular with outliers in the sample. The Gaussian mixture has a closed-form M-step, so it is an ordinary EM algorithm, run with the same driver `em()`.
-
-Contaminate the sample from before ($N = 400$) with 10 outliers $\pm U(8, 20)$, i.e. 2.4% of the data, and fit both models from the same starting value (the true parameters):
-
-```{r}
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
 #| label: gauss-one
 #| echo: false
 set.seed(1)
@@ -822,11 +822,11 @@ knitr::kable(
   one_tab, digits = 2, align = "r",
   col.names = c("$p$", "$\\mu_1$", "$\\mu_2$", "$\\sigma_1$", "$\\sigma_2$")
 )
-```
-
-## The two fits on the contaminated sample {.nostretch}
-
-```{r}
+#
+#
+#
+#
+#
 #| label: plot-gauss-fit
 #| echo: false
 #| fig-height: 4.4
@@ -857,17 +857,17 @@ ggplot(data.frame(x = x_cont), aes(x)) +
   scale_linetype_manual(values = c(1, 2, 3, 1, 2)) +
   labs(colour = NULL, linetype = NULL, y = "density",
        title = "N = 400 and 10 outliers (orange marks)")
-```
-
-- The Gaussian mixture has no heavy tails, so the only way it can give the outliers a positive likelihood is to **widen component 1** ($\sigma_1 = `r formatC(fit_g_cont[4], format = "f", digits = 2)`$). That component now lies under the whole sample, its mean is pulled to `r formatC(fit_g_cont[2], format = "f", digits = 2)`, and it takes weight from component 2 ($p = `r formatC(fit_g_cont[1], format = "f", digits = 2)`$).
-- The result is that the left mode has disappeared: the fitted Gaussian density is far too low around 0 and too high on the flanks, where there are almost no data.
-- The $t$ mixture keeps both modes and stays much closer to the true density: its tails already allow for a few far-away observations, so it only widens component 1 a little.
-
-## Estimates as a function of the number of outliers {.nostretch}
-
-20 simulated data sets ($N = 400$). To each, add $k$ outliers $\pm U(8, 20)$ and fit both mixtures, started at the true parameters so that only the *models* differ:
-
-```{r}
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
 #| label: gauss-outliers
 #| echo: false
 set.seed(3)
@@ -887,9 +887,9 @@ out_med <- aggregate(cbind(mu1, mu2, sigma1, sigma2) ~ k + model, out_res, media
 out_long <- reshape(out_med, direction = "long", varying = par_names[-1], v.names = "estimate",
                     timevar = "parameter", times = par_names[-1])
 med_at <- function(model, k, par) out_med[out_med$model == model & out_med$k == k, par]
-```
-
-```{r}
+#
+#
+#
 #| label: plot-gauss-outliers
 #| echo: false
 #| fig-height: 3.4
@@ -900,12 +900,15 @@ ggplot(out_long, aes(k, estimate, colour = model)) +
   facet_wrap(~parameter, nrow = 1, scales = "free_y") +
   labs(x = "number of outliers", y = "median estimate", colour = NULL) +
   theme(legend.position = "bottom")
-```
-
-Median estimate over the 20 data sets; the dashed lines are the true values.
-
-- **Without outliers** the two models agree on the locations, but the Gaussian mixture overestimates $\sigma_1$ (`r formatC(med_at("Gaussian mixture", 0, "sigma1"), format = "f", digits = 2)` against the true 1): it has to explain the heavy tails of the $t_5$ component with a larger variance.
-- **Two outliers (0.5%) are enough** to move the Gaussian $\sigma_1$ to `r formatC(med_at("Gaussian mixture", 2, "sigma1"), format = "f", digits = 2)` and $\mu_1$ to `r formatC(med_at("Gaussian mixture", 2, "mu1"), format = "f", digits = 2)`; the $t$ mixture gives `r formatC(med_at("t mixture", 2, "sigma1"), format = "f", digits = 2)` and `r formatC(med_at("t mixture", 2, "mu1"), format = "f", digits = 2)`.
-- **With 20 or more outliers the Gaussian mixture breaks down**: one component is used for the outliers alone ($\sigma_1 \approx `r round(med_at("Gaussian mixture", 20, "sigma1"))`$) and the other has to cover both real components.
-- The $t$ mixture degrades gradually instead. With fixed $\nu$ it is not immune: $\sigma_1$ still grows with the number of outliers.
-
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
