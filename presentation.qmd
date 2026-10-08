@@ -268,6 +268,140 @@ ggplot(data.frame(x), aes(x)) +
 :::
 ::::
 
+## Does the starting point matter?
+
+```{r}
+#| label: start-points
+#| echo: false
+# Replay the GEM iterations and recover the accepted step size s in each one:
+# par_new = par + s * g, so s = <par_new - par, g> / ||g||^2.
+step_sizes <- function(x, nu, par = default_start(x), eps = 1e-10, maxit = 1000) {
+  gem_step <- create_gem_step(x, nu)
+  out <- list()
+  for (i in seq_len(maxit)) {
+    gam <- e_step(par, x, nu)
+    par1 <- par
+    par1[1] <- mean(gam)
+    g <- grad_Q(par1, gam, x, nu)
+    g[1] <- 0
+    par_new <- gem_step(par)
+    out[[i]] <- data.frame(iter = i, step = sum((par_new - par1) * g) / sum(g^2), grad = sqrt(sum(g^2)),
+                           mu1 = par_new[2], mu2 = par_new[3])
+    done <- sum((par_new - par)^2) <= eps * (sum(par_new^2) + eps)
+    par <- par_new
+    if (done) break
+  }
+  do.call(rbind, out)
+}
+
+# 50 starting points: the default one and 49 random ones
+set.seed(1)
+starts <- c(list(par0), replicate(
+  49, c(runif(1, 0.1, 0.9), runif(2, min(x), max(x)), sd(x) * runif(2, 0.2, 2)), simplify = FALSE
+))
+
+# Where a fit ends: at the maximum from the previous slide, with p at 0 or 1, or at the mirror image
+end_levels <- c("global maximum", "labels swapped", "one component")
+end_of <- function(est) {
+  if (loglik(par_hat, x, nu) - loglik(est, x, nu) < 1e-3) end_levels[1]
+  else if (est[1] < 0.01 || est[1] > 0.99) end_levels[3]
+  else end_levels[2]
+}
+
+# Fit from every starting point with the backtracking started at step0
+fit_starts <- function(step0) {
+  do.call(rbind, lapply(starts, function(par) {
+    n_Q <- count_calls(est <- em(par, create_gem_step(x, nu, step0 = step0)), "Q")
+    data.frame(n_Q = n_Q[["Q"]], iter = attr(est, "iter"), end = end_of(est), loglik = loglik(est, x, nu))
+  }))
+}
+runs <- lapply(list(`1` = 1, `2^-5` = 2^-5, `2^-8` = 2^-8), fit_starts)
+n_end <- table(factor(runs[["1"]]$end, levels = end_levels))
+ll_swapped <- runs[["1"]]$loglik[runs[["1"]]$end == "labels swapped"]
+stopifnot(diff(range(ll_swapped)) < 1e-3) # the swapped fits are one and the same local maximum
+
+paths <- do.call(rbind, lapply(seq_along(starts), function(k) {
+  rbind(data.frame(start = k, iter = 0, step = NA, grad = NA, mu1 = starts[[k]][2], mu2 = starts[[k]][3]),
+        cbind(start = k, step_sizes(x, nu, starts[[k]])))
+}))
+paths$end <- factor(runs[["1"]]$end[paths$start], levels = end_levels)
+accepted <- paths[paths$iter > 0, ]
+accepted$log2_step <- round(log2(accepted$step))
+n_long <- sum(accepted$log2_step > -5)
+end_cols <- setNames(c("#2c7fb8", "#d95f02", "#1b9e77"), end_levels)
+```
+
+**50 starting points:** `default_start(x)` and 49 random ones, $p \sim U(0.1, 0.9)$, $\mu_j \sim U(\min x, \max x)$, $\sigma_j \sim \mathrm{sd}(x) \cdot U(0.2, 2)$.
+
+:::: {.columns}
+::: {.column width="50%"}
+```{r}
+#| label: plot-start-paths
+#| echo: false
+#| fig-width: 6
+#| fig-height: 3.2
+ggplot(paths, aes(mu1, mu2, group = start, colour = end)) +
+  geom_abline(slope = 1, intercept = 0, colour = "grey60", linetype = 3) +
+  geom_path(linewidth = 0.4, alpha = 0.7) +
+  geom_point(data = paths[paths$iter == 0, ], shape = 21, fill = "white", size = 2) +
+  geom_path(data = paths[paths$start == 1, ], colour = "black", linewidth = 1) +
+  geom_point(data = paths[paths$start == 1 & paths$iter == 0, ], colour = "black", size = 3) +
+  annotate("point", x = par_hat[2], y = par_hat[3], shape = 4, size = 4, stroke = 1.5) +
+  annotate("segment", x = -2.3, y = 5.5, xend = par0[2] - 0.12, yend = par0[3] + 0.15, colour = "grey30") +
+  annotate("text", x = -4.4, y = 5.7, label = "default start", size = 4.5, hjust = 0) +
+  annotate("text", x = 5.8, y = 3.9, label = "mu[1] == mu[2]", parse = TRUE, size = 4.5, hjust = 1, colour = "grey40") +
+  scale_x_continuous(breaks = seq(-4, 6, 2)) +
+  scale_colour_manual(values = end_cols) +
+  labs(x = expression(mu[1]), y = expression(mu[2]), colour = "ends in") +
+  theme(legend.position = "top", legend.text = element_text(size = 12), legend.title = element_text(size = 12))
+```
+
+**Do they all find the maximum? No.**
+
+- **`r n_end[[1]]` of 50** end at the estimate from the previous slide ($\times$), $\ell = `r formatC(loglik(par_hat, x, nu), format = "f", digits = 2)`$.
+- **`r n_end[[2]]`** end at a local maximum with the labels swapped, $\ell = `r formatC(max(ll_swapped), format = "f", digits = 2)`$: not the same fit, because $\nu_1 \neq \nu_2$.
+- **`r n_end[[3]]`** collapse to one component ($p \to 0$ or $1$).
+:::
+::: {.column width="50%"}
+```{r}
+#| label: plot-start-steps
+#| echo: false
+#| fig-width: 6
+#| fig-height: 3.2
+ggplot(accepted, aes(log2_step, fill = end)) +
+  geom_bar(width = 0.8, colour = "white", linewidth = 0.4) +
+  geom_vline(xintercept = -4.5, linetype = 2) +
+  annotate("text", x = -4.3, y = Inf, vjust = 1.5, hjust = 0, size = 4.5, parse = TRUE, label = "s > 2^-5") +
+  annotate("text", x = -4.3, y = Inf, vjust = 4, hjust = 0, size = 4.5,
+           label = paste(n_long, "of", nrow(accepted))) +
+  scale_x_continuous(breaks = -12:0, labels = function(k) parse(text = paste0("2^", k))) +
+  scale_fill_manual(values = end_cols) +
+  labs(x = "accepted step size s", y = "iterations", fill = "ends in") +
+  theme(legend.position = "top", legend.text = element_text(size = 12), legend.title = element_text(size = 12),
+        legend.key.size = unit(0.9, "lines"))
+```
+
+**How long are the accepted steps?** Only `r n_long` of `r nrow(accepted)` are longer than $2^{-5}$, wherever the fit starts and ends. The same 50 fits with a shorter first step in the backtracking:
+
+```{r}
+#| label: tab-start-steps
+#| echo: false
+start_tab <- data.frame(
+  step0 = c("$1$", "$2^{-5}$", "$2^{-8}$"),
+  n_Q   = formatC(sapply(runs, function(r) sum(r$n_Q)), format = "d"),
+  iter  = formatC(sapply(runs, function(r) sum(r$iter)), format = "d"),
+  same  = c("", paste(sapply(runs[-1], function(r) sum(r$end == runs[["1"]]$end)), "of 50"))
+)
+start_tab[2, ] <- paste0("**", start_tab[2, ], "**")
+knitr::kable(
+  start_tab, row.names = FALSE, align = c("l", "r", "r", "r"),
+  col.names = c("First step", "Evaluations of $Q$", "Iterations", "Same end point as with $s = 1$")
+)
+```
+:::
+::::
+
+
 # Is it correct?
 
 ## A test against `optim()`
@@ -357,7 +491,7 @@ knitr::kable(
 - `dt_ls()` is not an extra cost: it is the density inside `Q()` and `e_step()` (2 calls in each), so its row overlaps with theirs.
 - The gradient is almost free.
 
-## Conclusion: three hotspots
+## Conclusion: two hotspots
 
 1. **The line search.** $Q$ is evaluated `r round(calls[["Q"]] / n_iter, 1)` times per iteration (`r calls[["Q"]]` calls in `r n_iter` iterations), because the backtracking restarts from step size 1 in *every* iteration and needs about `r round(calls[["Q"]] / n_iter - 2)` halvings before the step is short enough ($\approx 2^{-`r round(calls[["Q"]] / n_iter - 2)`}$).
 2. **`dt()`.** Most of the time is spent inside R's `dt()`. Every $Q$ and every E-step evaluates the $t$-density twice for all $N$ points: `r calls[["dt_ls"]]` density evaluations of length `r length(x_big)` per fit.
@@ -371,25 +505,7 @@ Transition: first a look at the step sizes behind hotspot 1, which gives a cheap
 ```{r}
 #| label: step-sizes
 #| echo: false
-# Replay the GEM iterations and recover the accepted step size s in each one:
-# par_new = par + s * g, so s = <par_new - par, g> / ||g||^2.
-step_sizes <- function(x, nu, par = default_start(x), eps = 1e-10, maxit = 1000) {
-  gem_step <- create_gem_step(x, nu)
-  out <- list()
-  for (i in seq_len(maxit)) {
-    gam <- e_step(par, x, nu)
-    par1 <- par
-    par1[1] <- mean(gam)
-    g <- grad_Q(par1, gam, x, nu)
-    g[1] <- 0
-    par_new <- gem_step(par)
-    out[[i]] <- data.frame(iter = i, step = sum((par_new - par1) * g) / sum(g^2), grad = sqrt(sum(g^2)))
-    done <- sum((par_new - par)^2) <= eps * (sum(par_new^2) + eps)
-    par <- par_new
-    if (done) break
-  }
-  do.call(rbind, out)
-}
+# step_sizes() is defined on the slide "Does the starting point matter?"
 steps <- rbind(
   cbind(N = "N = 400", step_sizes(x, nu)),
   cbind(N = "N = 5000", step_sizes(x_big, nu))
@@ -418,7 +534,6 @@ ggplot(steps_long, aes(iter, value, colour = N)) +
 - The accepted step size is almost **constant**: $2^{-8} \approx `r signif(2^-8, 2)`$ for $N = 400$ (one iteration needs $2^{-9}$) and $2^{-11}$ or $2^{-12}$ for $N = 5000$  it scales like $1/N$, because the gradient is a sum over $N$ points.
 - The *move* $s\,\|g\|$ shrinks only because the gradient does. Starting the backtracking at $s = 1$ in every iteration is wasted work.
 
-[The first halvings are always rejected. Version 2 therefore starts the backtracking at $s = 2^{-5}$: still well above every accepted step, so the line search adapts to $N$ as before, but the five longest steps are never tried.]{.lesson}
 
 # A faster implementation: the log scale
 
@@ -649,8 +764,6 @@ ggplot(prof_cmp, aes(x = pct, y = fun, fill = type)) +
   labs(x = "share of the run time (%)", y = NULL, fill = NULL)
 ```
 
-`Rprof` for both versions: **total** is the share of the samples where the function is on the call stack, **self** the share where it is the function actually running.
-
 - **Fewer calls and cheaper calls:** starting at $2^{-5}$ saves `r round((calls[["Q"]] - calls_log[["Q"]]) / n_iter)` evaluations of $Q$ per iteration  `r round(calls_log[["Q"]] / n_iter, 1)` instead of `r round(calls[["Q"]] / n_iter, 1)`, with the same `r n_iter` iterations.
 
 # How good is it? Benchmark against R's optimizers
@@ -859,4 +972,3 @@ Median estimate over the 20 data sets; the dashed lines are the true values.
 - **With 20 or more outliers the Gaussian mixture breaks down**: one component is used for the outliers alone ($\sigma_1 \approx `r round(med_at("Gaussian mixture", 20, "sigma1"))`$) and the other has to cover both real components.
 - The $t$ mixture degrades gradually instead. With fixed $\nu$ it is not immune: $\sigma_1$ still grows with the number of outliers.
 
-[The heavy tails of the $t$-distribution make the estimates robust: in the gradient an observation far from $\mu$ gets the weight $w = (\nu + 1) / (\nu + r^2 / \sigma^2)$, which goes to 0, where the Gaussian mixture gives every observation full weight.]{.lesson}
