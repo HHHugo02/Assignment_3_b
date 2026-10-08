@@ -361,9 +361,6 @@ knitr::kable(
 
 1. **The line search.** $Q$ is evaluated `r round(calls[["Q"]] / n_iter, 1)` times per iteration (`r calls[["Q"]]` calls in `r n_iter` iterations), because the backtracking restarts from step size 1 in *every* iteration and needs about `r round(calls[["Q"]] / n_iter - 2)` halvings before the step is short enough ($\approx 2^{-`r round(calls[["Q"]] / n_iter - 2)`}$).
 2. **`dt()`.** Most of the time is spent inside R's `dt()`. Every $Q$ and every E-step evaluates the $t$-density twice for all $N$ points: `r calls[["dt_ls"]]` density evaluations of length `r length(x_big)` per fit.
-3. **Repeated work.** The E-step computes $p f_1(x_i)$ and $(1-p) f_2(x_i)$; right after, $Q$ (at the same parameters, as `Q_old`) computes the same densities again, and `grad_Q()` recomputes the residuals.
-
-[The profile is dominated by one line (the $Q$ call in the line search) and one primitive (`dt()`). Counting calls and timing each building block explains *why*: total time ≈ number of calls × cost per call.]{.lesson}
 
 ::: notes
 Transition: first a look at the step sizes behind hotspot 1, which gives a cheap fix (start the line search at 2^-5). Hotspot 2 (dt) is then attacked with a log-scale implementation. The new profile at the end shows what is left of hotspot 1.
@@ -441,7 +438,7 @@ source("R/load.R")
 $$
 Q(\theta \mid \hat\theta) = \sum_i \gamma_i \big(\log p + \log f_1(x_i)\big) + (1 - \gamma_i)\big(\log(1-p) + \log f_2(x_i)\big),
 $$
-but version 1 computes the density with `dt()` and then takes `log()` of it  a detour through the density scale.
+but version 1 computes the density with `dt()` and then takes `log()` of it .
 
 . . .
 
@@ -455,13 +452,11 @@ With $a_i = \log p + \log f_1(x_i)$ and $b_i = \log(1-p) + \log f_2(x_i)$:
 |---|---|---|
 | $Q$ | `log(p * dt(...))`, twice per point | $\sum_i \gamma_i a_i + (1-\gamma_i) b_i$  no `dt()`, no `log()` |
 | E-step | $\gamma_i = \frac{p f_1}{p f_1 + (1-p) f_2}$ | $\gamma_i = \frac{1}{1 + e^{b_i - a_i}}$ = `plogis(a - b)` |
-| log-likelihood | `sum(log(dtmix(...)))` | $\log(e^{a_i} + e^{b_i})$ with the log-sum-exp trick |
+| log-likelihood | `sum(log(dtmix(...)))` | $\log(e^{a_i} + e^{b_i})$ |
 
 . . .
 
-**And hotspot 1:** the line search now starts at $s = 2^{-5}$ instead of $1$ (`step0 = 2^-5` in `create_gem_step()`).
-
-**To compare the two fairly** they must run through the *same* GEM code and the *same* tests. So the code is restructured with S3: one class per implementation, and everything they share in a common parent class.
+**And hotspot 1:** the line search now starts at $s = 2^{-5}$ instead of $1$.
 
 ## The S3 design: two classes with a common parent
 
@@ -490,7 +485,6 @@ With $a_i = \log p + \log f_1(x_i)$ and $b_i = \log(1-p) + \log f_2(x_i)$:
     <text x="162" y="82">nu  (shape parameters)</text>
     <text x="162" y="114">grad_Q()</text>
     <text x="162" y="132">fit()</text>
-    <text x="162" y="150">print()</text>
     <text x="123" y="252" text-anchor="middle" font-weight="bold">tmix_density</text>
     <text x="20" y="282" fill="#777">(no extra fields)</text>
     <text x="20" y="316">loglik()</text>
@@ -515,30 +509,18 @@ With $a_i = \log p + \log f_1(x_i)$ and $b_i = \log(1-p) + \log f_2(x_i)$:
 - `fit()`: the GEM algorithm
 - `print()`
 
-**`tmix_density`**: version 1  `loglik()`, `e_step()` and `Q()` with `dt()`.
+**`tmix_density`**: `loglik()`, `e_step()` and `Q()` with slow `dt()`.
 
-**`tmix_log`**: the same three methods on log scale, plus the constant $c(\nu)$ stored in the object.
+**`tmix_log`**: A new version of the 3 methods using log density, and the constant $c(\nu)$ stored in the object.
 
-Only what *differs* between the implementations is written twice.
 :::
 ::::
 
-## Generics, methods and dispatch
-
-A **generic** only dispatches; a **method** is an ordinary function named `generic.class`:
-
-| Generic | `tmix_density` | `tmix_log` |
-|---|---|---|
-| `loglik()` | `loglik.tmix_density` | `loglik.tmix_log` |
-| `e_step()` | `e_step.tmix_density` | `e_step.tmix_log` |
-| `Q()` | `Q.tmix_density` | `Q.tmix_log` |
-| `grad_Q()` | `grad_Q.tmix` (inherited) | `grad_Q.tmix` (inherited) |
-| `fit()` | `fit.tmix` (inherited) | `fit.tmix` (inherited) | | `print()` | `print.tmix` (inherited) | `print.tmix` (inherited) |
 
 
 ## One GEM algorithm for both classes
 
-The GEM code only talks to the model through the generics (`e_step(model, par)`, `Q(model, par, gam)`, `grad_Q(model, par, gam)`), so the same `fit()` works for both classes.
+The GEM fit is slighty modified to take model as input, so the same `fit()` works for both classes.
 
 Make the two models and fit them:
 
@@ -551,7 +533,6 @@ rbind(density = fit(model_d),
       log     = fit(model_l))
 ```
 
-Same algorithm, same estimate  only the way the densities are computed differs. Both classes use the new first step $2^{-5}$; the halving passes through the same step sizes as before, so the estimate is also the same as in version 1 (`r formatC(max(abs(fit(model_l) - fit_v1)), format = "e", digits = 0)` apart).
 
 ## Do the two classes agree?
 
