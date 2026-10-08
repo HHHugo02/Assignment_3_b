@@ -592,7 +592,7 @@ knitr::kable(
 
 - The whole fit is **`r round(as.numeric(bm_classes$median[1] / bm_classes$median[2]), 1)` times faster** on log scale, with the same estimate and the same number of iterations. Both classes start the line search at $2^{-5}$, so this is the effect of the log scale alone.
 
-## Where is the time now?
+## Where is the time now? {.nostretch}
 
 Profiling comparison
 
@@ -733,50 +733,13 @@ ggplot(press_df, aes(N, ms, colour = method)) +
   labs(y = "median time (ms)", colour = NULL)
 ```
 
-## The same numbers as a table
+## Why is the GEM slower than the quasi-Newton methods?
 
-```{r}
-#| label: press-table
-#| echo: false
-tab <- reshape(press_df, idvar = "method", timevar = "N", direction = "wide")
-names(tab) <- sub("ms\\.", "N = ", names(tab))
-tab[order(tab[[ncol(tab)]]), ] |> transform(method = method) |>
-  (\(d) { d[-1] <- round(d[-1], 1); rownames(d) <- NULL; d })()
-```
+All the methods spend their time the same way: on passes over the data in the same R functions. So the speed is decided by **how many passes** a method needs.
 
-Median time in ms, sorted by the time for the largest $N$.
-
-- **The methods scale linearly in $N$** (parallel lines): they spend their time on passes over the data, and the number of passes hardly depends on $N$. The exception is CG, which is erratic: the number of evaluations it needs varies a lot from data set to data set.
-- **The quasi-Newton methods are fastest, Nelder-Mead slowest of the stable methods** — the next slide shows why.
-
-## Why are the quasi-Newton methods faster?
-
-Not because they are compiled. The algorithms inside `optim()` (C) and `nlminb()` (Fortran) are compiled, but they call *our R functions* `loglik()`, `e_step()` and `grad_Q()` — the same vectorized code the GEM uses. Counting the calls for one fit ($N = 5000$):
-
-```{r}
-#| label: passes-table
-#| echo: false
-pass_funs <- c("loglik", "e_step", "Q", "grad_Q")
-pass_calls <- t(sapply(methods, function(f) count_calls(f(model_log), pass_funs)))
-pass_ms <- sapply(methods, function(f) 1000 * as.numeric(bench::mark(f(model_log), check = FALSE, min_iterations = 5)$median))
-passes <- rowSums(pass_calls)
-pass_tab <- data.frame(
-  method = rownames(pass_calls), pass_calls, passes = passes,
-  ms = formatC(pass_ms, format = "f", digits = 1),
-  ms_pass = formatC(pass_ms / passes, format = "f", digits = 2)
-)[order(pass_ms), ]
-pass_tab$method[pass_tab$method == "GEM"] <- "**GEM (ours)**"
-knitr::kable(
-  pass_tab, row.names = FALSE, align = c("l", rep("r", 7)),
-  col.names = c("Method", "`loglik()`", "`e_step()`", "`Q()`", "`grad_Q()`",
-                "Passes over the data", "Time (ms)", "ms per pass")
-)
-```
-
-- **A pass over the data costs the same for everyone**, about `r formatC(min(pass_ms / passes), format = "f", digits = 2)`–`r formatC(max(pass_ms / passes), format = "f", digits = 2)` ms. The time outside our R functions is negligible, so the compiled code is not what makes the difference.
-- **The difference is the number of passes.** The GEM needs `r passes[["GEM"]]`, L-BFGS-B `r passes[["L-BFGS-B"]]` and BFGS `r passes[["BFGS"]]`.
-- **Why so few?** The quasi-Newton methods build an approximation of the curvature (the Hessian) from the gradients, so each step has a good direction *and* a good length: they converge superlinearly and the first step tried is usually accepted. The GEM takes a plain gradient step: it converges linearly (`r n_iter` iterations) and needs about `r round(calls_log[["Q"]] / n_iter)` evaluations of $Q$ per iteration to find the step length — hotspot 1 from the profile.
-- **Nelder-Mead** uses no gradient at all and needs `r passes[["Nelder-Mead"]]` evaluations of $\ell$.
+- **The GEM takes many small steps.** It follows the gradient, which only gives a direction, and converges slowly: `r n_iter` iterations for $N = 5000$.
+- **Each step is expensive.** The step length has to be found by trial and error, about `r round(calls_log[["Q"]] / n_iter)` evaluations of $Q$ per iteration.
+- **The quasi-Newton methods take few, good steps.** They also use the curvature, so they know both the direction and how far to go.
 
 # Robustness: $t$ mixture vs Gaussian mixture
 
@@ -811,7 +774,7 @@ knitr::kable(
 )
 ```
 
-## The two fits on the contaminated sample
+## The two fits on the contaminated sample {.nostretch}
 
 ```{r}
 #| label: plot-gauss-fit
@@ -850,7 +813,7 @@ ggplot(data.frame(x = x_cont), aes(x)) +
 - The result is that the left mode has disappeared: the fitted Gaussian density is far too low around 0 and too high on the flanks, where there are almost no data.
 - The $t$ mixture keeps both modes and stays much closer to the true density: its tails already allow for a few far-away observations, so it only widens component 1 a little.
 
-## Estimates as a function of the number of outliers
+## Estimates as a function of the number of outliers {.nostretch}
 
 20 simulated data sets ($N = 400$). To each, add $k$ outliers $\pm U(8, 20)$ and fit both mixtures, started at the true parameters so that only the *models* differ:
 
