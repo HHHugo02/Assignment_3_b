@@ -272,7 +272,7 @@ ggplot(data.frame(x), aes(x)) +
 
 ## A test against `optim()`
 
-`optim()` is R's general-purpose optimizer. It knows nothing about EM: it just maximizes the observed log-likelihood $\ell(\theta)$ directly. If my GEM is implemented correctly, the two must find the same maximum.
+`optim()` is R's general-purpose optimizer. It maximizes the observed log-likelihood $\ell(\theta)$ directly. If the GEM is implemented correctly, the two must find the same maximum.
 
 Both are started at the same point (`default_start()`):
 
