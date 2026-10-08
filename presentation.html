@@ -1489,7 +1489,7 @@ Q = \underbrace{\sum_i \gamma_i \log p + (1 - \gamma_i)\log(1-p)}_{\text{only } 
 </section>
 <section id="a-test-against-optim" class="slide level2">
 <h2>A test against <code>optim()</code></h2>
-<p><code>optim()</code> is R’s general-purpose optimizer. It knows nothing about EM: it just maximizes the observed log-likelihood <span class="math inline">\(\ell(\theta)\)</span> directly. If my GEM is implemented correctly, the two must find the same maximum.</p>
+<p><code>optim()</code> is R’s general-purpose optimizer. It maximizes the observed log-likelihood <span class="math inline">\(\ell(\theta)\)</span> directly. If the GEM is implemented correctly, the two must find the same maximum.</p>
 <p>Both are started at the same point (<code>default_start()</code>):</p>
 <div class="cell" data-layout-align="center">
 <div class="cell-output-display">
