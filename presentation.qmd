@@ -138,22 +138,6 @@ $$
 Q(\theta \mid \hat\theta) = \sum_{i=1}^N \gamma_i \big(\log p + \log f_1(x_i)\big) + (1 - \gamma_i)\big(\log(1-p) + \log f_2(x_i)\big)
 $$
 
-The $\gamma_i$ are computed from the **old** $\hat\theta$ and are fixed numbers ("soft labels"); $\theta$ in the logs is the **new** parameter we optimize over.
-
-```{r}
-#| label: plot-gamma
-#| echo: false
-#| fig-height: 2.6
-par_hat <- gem(x, nu, eps = 1e-14)
-gdf <- rbind(
-  data.frame(x = grid, gamma = e_step(par0, grid, nu), theta = "at the start value"),
-  data.frame(x = grid, gamma = e_step(par_hat, grid, nu), theta = "at the estimate")
-)
-ggplot(gdf, aes(x, gamma, colour = theta)) +
-  geom_line(linewidth = 1) +
-  geom_rug(data = data.frame(x), aes(x), inherit.aes = FALSE, alpha = 0.3) +
-  labs(y = expression(gamma == P(Z == 1 ~ "|" ~ X == x)), colour = NULL)
-```
 
 ## M-step: maximize $Q$  what can be solved?
 
@@ -190,8 +174,6 @@ $$
 $$
  but $w_{i1}$ depends on $\mu_1$ and $\sigma_1$ themselves: fixed-point equations, not formulas.
 
-[No closed-form M-step for $(\mu, \sigma)$. **Generalized EM:** we only need $Q(\theta_{n+1} \mid \theta_n) \ge Q(\theta_n \mid \theta_n)$, so: exact update of $p$ + one uphill (gradient) step for $(\mu_1, \mu_2, \sigma_1, \sigma_2)$.]{.problem}
-
 
 ## One gradient step  but how long?
 
@@ -227,8 +209,6 @@ ggplot(step_df, aes(s, change)) +
   annotate("text", x = s_zero + 0.0002, y = 2.2, label = "too long:\nQ decreases", size = 4.5, hjust = 0, colour = "#d95f02") +
   labs(x = "step size s", y = "change in Q")
 ```
-
-[The gradient only gives the *direction*. A long step jumps past the top and $Q$ **decreases** (then it is not a GEM step), and an even longer one ($s > `r signif(min(-par1[4:5] / g[4:5]), 2)`$) makes $\sigma$ negative; too short a step barely moves. The right length depends on the data.]{.problem}
 
 . . .
 
@@ -268,140 +248,6 @@ ggplot(data.frame(x), aes(x)) +
 :::
 ::::
 
-## Does the starting point matter?
-
-```{r}
-#| label: start-points
-#| echo: false
-# Replay the GEM iterations and recover the accepted step size s in each one:
-# par_new = par + s * g, so s = <par_new - par, g> / ||g||^2.
-step_sizes <- function(x, nu, par = default_start(x), eps = 1e-10, maxit = 1000) {
-  gem_step <- create_gem_step(x, nu)
-  out <- list()
-  for (i in seq_len(maxit)) {
-    gam <- e_step(par, x, nu)
-    par1 <- par
-    par1[1] <- mean(gam)
-    g <- grad_Q(par1, gam, x, nu)
-    g[1] <- 0
-    par_new <- gem_step(par)
-    out[[i]] <- data.frame(iter = i, step = sum((par_new - par1) * g) / sum(g^2), grad = sqrt(sum(g^2)),
-                           mu1 = par_new[2], mu2 = par_new[3])
-    done <- sum((par_new - par)^2) <= eps * (sum(par_new^2) + eps)
-    par <- par_new
-    if (done) break
-  }
-  do.call(rbind, out)
-}
-
-# 50 starting points: the default one and 49 random ones
-set.seed(1)
-starts <- c(list(par0), replicate(
-  49, c(runif(1, 0.1, 0.9), runif(2, min(x), max(x)), sd(x) * runif(2, 0.2, 2)), simplify = FALSE
-))
-
-# Where a fit ends: at the maximum from the previous slide, with p at 0 or 1, or at the mirror image
-end_levels <- c("global maximum", "labels swapped", "one component")
-end_of <- function(est) {
-  if (loglik(par_hat, x, nu) - loglik(est, x, nu) < 1e-3) end_levels[1]
-  else if (est[1] < 0.01 || est[1] > 0.99) end_levels[3]
-  else end_levels[2]
-}
-
-# Fit from every starting point with the backtracking started at step0
-fit_starts <- function(step0) {
-  do.call(rbind, lapply(starts, function(par) {
-    n_Q <- count_calls(est <- em(par, create_gem_step(x, nu, step0 = step0)), "Q")
-    data.frame(n_Q = n_Q[["Q"]], iter = attr(est, "iter"), end = end_of(est), loglik = loglik(est, x, nu))
-  }))
-}
-runs <- lapply(list(`1` = 1, `2^-5` = 2^-5, `2^-8` = 2^-8), fit_starts)
-n_end <- table(factor(runs[["1"]]$end, levels = end_levels))
-ll_swapped <- runs[["1"]]$loglik[runs[["1"]]$end == "labels swapped"]
-stopifnot(diff(range(ll_swapped)) < 1e-3) # the swapped fits are one and the same local maximum
-
-paths <- do.call(rbind, lapply(seq_along(starts), function(k) {
-  rbind(data.frame(start = k, iter = 0, step = NA, grad = NA, mu1 = starts[[k]][2], mu2 = starts[[k]][3]),
-        cbind(start = k, step_sizes(x, nu, starts[[k]])))
-}))
-paths$end <- factor(runs[["1"]]$end[paths$start], levels = end_levels)
-accepted <- paths[paths$iter > 0, ]
-accepted$log2_step <- round(log2(accepted$step))
-n_long <- sum(accepted$log2_step > -5)
-end_cols <- setNames(c("#2c7fb8", "#d95f02", "#1b9e77"), end_levels)
-```
-
-**50 starting points:** `default_start(x)` and 49 random ones, $p \sim U(0.1, 0.9)$, $\mu_j \sim U(\min x, \max x)$, $\sigma_j \sim \mathrm{sd}(x) \cdot U(0.2, 2)$.
-
-:::: {.columns}
-::: {.column width="50%"}
-```{r}
-#| label: plot-start-paths
-#| echo: false
-#| fig-width: 6
-#| fig-height: 3.2
-ggplot(paths, aes(mu1, mu2, group = start, colour = end)) +
-  geom_abline(slope = 1, intercept = 0, colour = "grey60", linetype = 3) +
-  geom_path(linewidth = 0.4, alpha = 0.7) +
-  geom_point(data = paths[paths$iter == 0, ], shape = 21, fill = "white", size = 2) +
-  geom_path(data = paths[paths$start == 1, ], colour = "black", linewidth = 1) +
-  geom_point(data = paths[paths$start == 1 & paths$iter == 0, ], colour = "black", size = 3) +
-  annotate("point", x = par_hat[2], y = par_hat[3], shape = 4, size = 4, stroke = 1.5) +
-  annotate("segment", x = -2.3, y = 5.5, xend = par0[2] - 0.12, yend = par0[3] + 0.15, colour = "grey30") +
-  annotate("text", x = -4.4, y = 5.7, label = "default start", size = 4.5, hjust = 0) +
-  annotate("text", x = 5.8, y = 3.9, label = "mu[1] == mu[2]", parse = TRUE, size = 4.5, hjust = 1, colour = "grey40") +
-  scale_x_continuous(breaks = seq(-4, 6, 2)) +
-  scale_colour_manual(values = end_cols) +
-  labs(x = expression(mu[1]), y = expression(mu[2]), colour = "ends in") +
-  theme(legend.position = "top", legend.text = element_text(size = 12), legend.title = element_text(size = 12))
-```
-
-**Do they all find the maximum? No.**
-
-- **`r n_end[[1]]` of 50** end at the estimate from the previous slide ($\times$), $\ell = `r formatC(loglik(par_hat, x, nu), format = "f", digits = 2)`$.
-- **`r n_end[[2]]`** end at a local maximum with the labels swapped, $\ell = `r formatC(max(ll_swapped), format = "f", digits = 2)`$: not the same fit, because $\nu_1 \neq \nu_2$.
-- **`r n_end[[3]]`** collapse to one component ($p \to 0$ or $1$).
-:::
-::: {.column width="50%"}
-```{r}
-#| label: plot-start-steps
-#| echo: false
-#| fig-width: 6
-#| fig-height: 3.2
-ggplot(accepted, aes(log2_step, fill = end)) +
-  geom_bar(width = 0.8, colour = "white", linewidth = 0.4) +
-  geom_vline(xintercept = -4.5, linetype = 2) +
-  annotate("text", x = -4.3, y = Inf, vjust = 1.5, hjust = 0, size = 4.5, parse = TRUE, label = "s > 2^-5") +
-  annotate("text", x = -4.3, y = Inf, vjust = 4, hjust = 0, size = 4.5,
-           label = paste(n_long, "of", nrow(accepted))) +
-  scale_x_continuous(breaks = -12:0, labels = function(k) parse(text = paste0("2^", k))) +
-  scale_fill_manual(values = end_cols) +
-  labs(x = "accepted step size s", y = "iterations", fill = "ends in") +
-  theme(legend.position = "top", legend.text = element_text(size = 12), legend.title = element_text(size = 12),
-        legend.key.size = unit(0.9, "lines"))
-```
-
-**How long are the accepted steps?** Only `r n_long` of `r nrow(accepted)` are longer than $2^{-5}$, wherever the fit starts and ends. The same 50 fits with a shorter first step in the backtracking:
-
-```{r}
-#| label: tab-start-steps
-#| echo: false
-start_tab <- data.frame(
-  step0 = c("$1$", "$2^{-5}$", "$2^{-8}$"),
-  n_Q   = formatC(sapply(runs, function(r) sum(r$n_Q)), format = "d"),
-  iter  = formatC(sapply(runs, function(r) sum(r$iter)), format = "d"),
-  same  = c("", paste(sapply(runs[-1], function(r) sum(r$end == runs[["1"]]$end)), "of 50"))
-)
-start_tab[2, ] <- paste0("**", start_tab[2, ], "**")
-knitr::kable(
-  start_tab, row.names = FALSE, align = c("l", "r", "r", "r"),
-  col.names = c("First step", "Evaluations of $Q$", "Iterations", "Same end point as with $s = 1$")
-)
-```
-:::
-::::
-
-
 # Is it correct?
 
 ## A test against `optim()`
@@ -413,6 +259,7 @@ Both are started at the same point (`default_start()`):
 ```{r}
 #| label: test-optim
 #| echo: false
+par_hat <- gem(x, nu, eps = 1e-14)
 nll <- function(eta) -loglik(c(plogis(eta[1]), eta[2:3], exp(eta[4:5])), x, nu)
 eta <- optim(c(qlogis(par0[1]), par0[2:3], log(par0[4:5])), nll,
              method = "BFGS", control = list(reltol = 1e-14, maxit = 1000))$par
@@ -500,40 +347,138 @@ knitr::kable(
 Transition: first a look at the step sizes behind hotspot 1, which gives a cheap fix (start the line search at 2^-5). Hotspot 2 (dt) is then attacked with a log-scale implementation. The new profile at the end shows what is left of hotspot 1.
 :::
 
-## How long are the steps actually?
+## Does the starting point matter?
 
 ```{r}
-#| label: step-sizes
+#| label: start-points
 #| echo: false
-# step_sizes() is defined on the slide "Does the starting point matter?"
-steps <- rbind(
-  cbind(N = "N = 400", step_sizes(x, nu)),
-  cbind(N = "N = 5000", step_sizes(x_big, nu))
-)
-steps_long <- rbind(
-  data.frame(steps[c("N", "iter")], what = "step size s", value = steps$step),
-  data.frame(steps[c("N", "iter")], what = "length of the move, s * ||g||", value = steps$step * steps$grad)
-)
-steps_long$what <- factor(steps_long$what, levels = unique(steps_long$what))
+# Replay the GEM iterations and recover the accepted step size s in each one:
+# par_new = par + s * g, so s = <par_new - par, g> / ||g||^2.
+step_sizes <- function(x, nu, par = default_start(x), eps = 1e-10, maxit = 1000) {
+  gem_step <- create_gem_step(x, nu)
+  out <- list()
+  for (i in seq_len(maxit)) {
+    gam <- e_step(par, x, nu)
+    par1 <- par
+    par1[1] <- mean(gam)
+    g <- grad_Q(par1, gam, x, nu)
+    g[1] <- 0
+    par_new <- gem_step(par)
+    out[[i]] <- data.frame(iter = i, step = sum((par_new - par1) * g) / sum(g^2), grad = sqrt(sum(g^2)),
+                           mu1 = par_new[2], mu2 = par_new[3])
+    done <- sum((par_new - par)^2) <= eps * (sum(par_new^2) + eps)
+    par <- par_new
+    if (done) break
+  }
+  do.call(rbind, out)
+}
+
+# 50 starting points: the default one and 49 random ones
+set.seed(1)
+starts <- c(list(par0), replicate(
+  49, c(runif(1, 0.1, 0.9), runif(2, min(x), max(x)), sd(x) * runif(2, 0.2, 2)), simplify = FALSE
+))
+
+# Where a fit ends: at the maximum found from the default start, with p at 0 or 1, or at the mirror image
+end_levels <- c("global maximum", "labels swapped", "one component")
+end_of <- function(est) {
+  if (loglik(par_hat, x, nu) - loglik(est, x, nu) < 1e-3) end_levels[1]
+  else if (est[1] < 0.01 || est[1] > 0.99) end_levels[3]
+  else end_levels[2]
+}
+
+# Fit from every starting point with the backtracking started at step0
+fit_starts <- function(step0) {
+  do.call(rbind, lapply(starts, function(par) {
+    n_Q <- count_calls(est <- em(par, create_gem_step(x, nu, step0 = step0)), "Q")
+    data.frame(n_Q = n_Q[["Q"]], iter = attr(est, "iter"), end = end_of(est), loglik = loglik(est, x, nu))
+  }))
+}
+runs <- lapply(list(`1` = 1, `2^-5` = 2^-5, `2^-8` = 2^-8), fit_starts)
+n_end <- table(factor(runs[["1"]]$end, levels = end_levels))
+ll_swapped <- runs[["1"]]$loglik[runs[["1"]]$end == "labels swapped"]
+stopifnot(diff(range(ll_swapped)) < 1e-3) # the swapped fits are one and the same local maximum
+
+paths <- do.call(rbind, lapply(seq_along(starts), function(k) {
+  rbind(data.frame(start = k, iter = 0, step = NA, grad = NA, mu1 = starts[[k]][2], mu2 = starts[[k]][3]),
+        cbind(start = k, step_sizes(x, nu, starts[[k]])))
+}))
+paths$end <- factor(runs[["1"]]$end[paths$start], levels = end_levels)
+accepted <- paths[paths$iter > 0, ]
+accepted$log2_step <- round(log2(accepted$step))
+n_long <- sum(accepted$log2_step > -5)
+end_cols <- setNames(c("#2c7fb8", "#d95f02", "#1b9e77"), end_levels)
 ```
+
+**50 starting points:** `default_start(x)` and 49 random ones, $p \sim U(0.1, 0.9)$, $\mu_j \sim U(\min x, \max x)$, $\sigma_j \sim \mathrm{sd}(x) \cdot U(0.2, 2)$.
+
+:::: {.columns}
+::: {.column width="50%"}
+```{r}
+#| label: plot-start-paths
+#| echo: false
+#| fig-width: 6
+#| fig-height: 3.2
+ggplot(paths, aes(mu1, mu2, group = start, colour = end)) +
+  geom_abline(slope = 1, intercept = 0, colour = "grey60", linetype = 3) +
+  geom_path(linewidth = 0.4, alpha = 0.7) +
+  geom_point(data = paths[paths$iter == 0, ], shape = 21, fill = "white", size = 2) +
+  geom_path(data = paths[paths$start == 1, ], colour = "black", linewidth = 1) +
+  geom_point(data = paths[paths$start == 1 & paths$iter == 0, ], colour = "black", size = 3) +
+  annotate("point", x = par_hat[2], y = par_hat[3], shape = 4, size = 4, stroke = 1.5) +
+  annotate("segment", x = -2.3, y = 5.5, xend = par0[2] - 0.12, yend = par0[3] + 0.15, colour = "grey30") +
+  annotate("text", x = -4.4, y = 5.7, label = "default start", size = 4.5, hjust = 0) +
+  annotate("text", x = 5.8, y = 3.9, label = "mu[1] == mu[2]", parse = TRUE, size = 4.5, hjust = 1, colour = "grey40") +
+  scale_x_continuous(breaks = seq(-4, 6, 2)) +
+  scale_colour_manual(values = end_cols) +
+  labs(x = expression(mu[1]), y = expression(mu[2]), colour = "ends in") +
+  theme(legend.position = "top", legend.text = element_text(size = 12), legend.title = element_text(size = 12))
+```
+
+**Do they all find the maximum? No.**
+
+- **`r n_end[[1]]` of 50** end at the same estimate as the default start ($\times$), $\ell = `r formatC(loglik(par_hat, x, nu), format = "f", digits = 2)`$.
+- **`r n_end[[2]]`** end at a local maximum with the labels swapped, $\ell = `r formatC(max(ll_swapped), format = "f", digits = 2)`$: not the same fit, because $\nu_1 \neq \nu_2$.
+- **`r n_end[[3]]`** collapse to one component ($p \to 0$ or $1$).
+:::
+::: {.column width="50%"}
+```{r}
+#| label: plot-start-steps
+#| echo: false
+#| fig-width: 6
+#| fig-height: 3.2
+ggplot(accepted, aes(log2_step, fill = end)) +
+  geom_bar(width = 0.8, colour = "white", linewidth = 0.4) +
+  geom_vline(xintercept = -4.5, linetype = 2) +
+  annotate("text", x = -4.3, y = Inf, vjust = 1.5, hjust = 0, size = 4.5, parse = TRUE, label = "s > 2^-5") +
+  annotate("text", x = -4.3, y = Inf, vjust = 4, hjust = 0, size = 4.5,
+           label = paste(n_long, "of", nrow(accepted))) +
+  scale_x_continuous(breaks = -12:0, labels = function(k) parse(text = paste0("2^", k))) +
+  scale_fill_manual(values = end_cols) +
+  labs(x = "accepted step size s", y = "iterations", fill = "ends in") +
+  theme(legend.position = "top", legend.text = element_text(size = 12), legend.title = element_text(size = 12),
+        legend.key.size = unit(0.9, "lines"))
+```
+
+**How long are the accepted steps?** Only `r n_long` of `r nrow(accepted)` are longer than $2^{-5}$, wherever the fit starts and ends. The same 50 fits with a shorter first step in the backtracking:
 
 ```{r}
-#| label: plot-step-sizes
+#| label: tab-start-steps
 #| echo: false
-#| fig-height: 3.6
-ggplot(steps_long, aes(iter, value, colour = N)) +
-  geom_line(linewidth = 0.6) +
-  geom_point(size = 2) +
-  facet_wrap(~what, scales = "free_y") +
-  scale_y_continuous(trans = "log2", labels = function(v) parse(text = paste0("2^", round(log2(v))))) +
-  scale_colour_manual(values = c("#2c7fb8", "#d95f02")) +
-  labs(x = "iteration", y = NULL, colour = NULL) +
-  theme(legend.position = "top")
+start_tab <- data.frame(
+  step0 = c("$1$", "$2^{-5}$", "$2^{-8}$"),
+  n_Q   = formatC(sapply(runs, function(r) sum(r$n_Q)), format = "d"),
+  iter  = formatC(sapply(runs, function(r) sum(r$iter)), format = "d"),
+  same  = c("", paste(sapply(runs[-1], function(r) sum(r$end == runs[["1"]]$end)), "of 50"))
+)
+start_tab[2, ] <- paste0("**", start_tab[2, ], "**")
+knitr::kable(
+  start_tab, row.names = FALSE, align = c("l", "r", "r", "r"),
+  col.names = c("First step", "Evaluations of $Q$", "Iterations", "Same end point as with $s = 1$")
+)
 ```
-
-- The accepted step size is almost **constant**: $2^{-8} \approx `r signif(2^-8, 2)`$ for $N = 400$ (one iteration needs $2^{-9}$) and $2^{-11}$ or $2^{-12}$ for $N = 5000$  it scales like $1/N$, because the gradient is a sum over $N$ points.
-- The *move* $s\,\|g\|$ shrinks only because the gradient does. Starting the backtracking at $s = 1$ in every iteration is wasted work.
-
+:::
+::::
 
 # A faster implementation: the log scale
 
@@ -622,7 +567,6 @@ With $a_i = \log p + \log f_1(x_i)$ and $b_i = \log(1-p) + \log f_2(x_i)$:
 - the data `x` and the shape parameters `nu`
 - `grad_Q()`: the gradient is the same formula
 - `fit()`: the GEM algorithm
-- `print()`
 
 **`tmix_density`**: `loglik()`, `e_step()` and `Q()` with slow `dt()`.
 
@@ -858,14 +802,7 @@ All the methods spend their time the same way: on passes over the data in the sa
 
 ## A Gaussian mixture for comparison
 
-The assignment suggests comparing the location and scale estimates with those from a two-component **Gaussian** mixture, in particular with outliers in the sample. The Gaussian mixture has a closed-form M-step, so it is an ordinary EM algorithm, run with the same driver `em()`:
-
-```{r}
-#| label: gauss-step
-#| echo: false
-#| results: asis
-cat("```r\n", show_fun("create_em_gauss_step"), "\n```\n", sep = "")
-```
+The assignment suggests comparing the location and scale estimates with those from a two-component **Gaussian** mixture, in particular with outliers in the sample. The Gaussian mixture has a closed-form M-step, so it is an ordinary EM algorithm, run with the same driver `em()`.
 
 Contaminate the sample from before ($N = 400$) with 10 outliers $\pm U(8, 20)$, i.e. 2.4% of the data, and fit both models from the same starting value (the true parameters):
 
