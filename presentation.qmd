@@ -410,8 +410,6 @@ n_long <- sum(accepted$log2_step > -5)
 end_cols <- setNames(c("#2c7fb8", "#d95f02", "#1b9e77"), end_levels)
 ```
 
-**50 starting points:** `default_start(x)` and 49 random ones, $p \sim U(0.1, 0.9)$, $\mu_j \sim U(\min x, \max x)$, $\sigma_j \sim \mathrm{sd}(x) \cdot U(0.2, 2)$.
-
 :::: {.columns}
 ::: {.column width="50%"}
 ```{r}
@@ -434,6 +432,9 @@ ggplot(paths, aes(mu1, mu2, group = start, colour = end)) +
   labs(x = expression(mu[1]), y = expression(mu[2]), colour = "ends in") +
   theme(legend.position = "top", legend.text = element_text(size = 12), legend.title = element_text(size = 12))
 ```
+:::
+::: {.column width="50%"}
+**50 starting points:** `default_start(x)` and 49 random ones, $p \sim U(0.1, 0.9)$, $\mu_j \sim U(\min x, \max x)$, $\sigma_j \sim \mathrm{sd}(x) \cdot U(0.2, 2)$.
 
 **Do they all find the maximum? No.**
 
