@@ -15,11 +15,12 @@ x <- rtmix(400, par_true, nu)
 par0 <- default_start(x)
 par_rand <- c(0.4, -0.5, 2.5, 1.3, 0.9)
 
-models <- list(density = tmix_density(x, nu), log = tmix_log(x, nu))
+models <- list(density = tmix_density(x, nu), log = tmix_log(x, nu), cpp = tmix_cpp(x, nu))
 
-test_that("both implementations are subclasses of tmix", {
+test_that("all implementations are subclasses of tmix", {
   expect_s3_class(models$density, c("tmix_density", "tmix"), exact = TRUE)
   expect_s3_class(models$log, c("tmix_log", "tmix"), exact = TRUE)
+  expect_s3_class(models$cpp, c("tmix_cpp", "tmix"), exact = TRUE)
 })
 
 # The same correctness checks for each implementation -----------------------------
@@ -63,7 +64,8 @@ for (name in names(models)) {
     skip_if_not_installed("teigen")
     set.seed(1)
     x5 <- rtmix(1000, par_true, c(5, 5))
-    model5 <- if (name == "density") tmix_density(x5, c(5, 5)) else tmix_log(x5, c(5, 5))
+    model5 <- switch(name, density = tmix_density(x5, c(5, 5)), log = tmix_log(x5, c(5, 5)),
+                     cpp = tmix_cpp(x5, c(5, 5)))
     par_gem <- fit(model5, eps = 1e-14)
     tg <- teigen::teigen(x5,
       Gs = 2, models = "univUU", dfstart = 5, dfupdate = FALSE,
@@ -90,6 +92,17 @@ test_that("the two implementations compute the same building blocks", {
 
 test_that("the two implementations give the same fit", {
   expect_equal(fit(models$log), fit(models$density), tolerance = 1e-8)
+})
+
+test_that("the C++ class computes the same as the log class", {
+  l <- models$log
+  cc <- models$cpp
+  gam <- e_step(l, par0)
+  expect_equal(loglik(cc, par_rand), loglik(l, par_rand), tolerance = 1e-12)
+  expect_equal(e_step(cc, par_rand), e_step(l, par_rand), tolerance = 1e-12)
+  expect_equal(Q(cc, par_rand, gam), Q(l, par_rand, gam), tolerance = 1e-12)
+  expect_equal(grad_Q(cc, par_rand, gam), grad_Q(l, par_rand, gam), tolerance = 1e-12)
+  expect_equal(fit(cc), fit(l), tolerance = 1e-10)
 })
 
 test_that("the log scale survives an extreme outlier where the density scale fails", {

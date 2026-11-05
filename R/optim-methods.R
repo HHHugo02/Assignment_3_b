@@ -39,13 +39,3 @@ fit_optim <- function(model, method = "BFGS", par0 = default_start(model$x),
   attr(par, "iter") <- unname(opt$counts[1]) # number of function evaluations
   par
 }
-
-# Fit with nlminb() (a quasi-Newton method from the PORT library)
-fit_nlminb <- function(model, par0 = default_start(model$x), rel.tol = 1e-10) {
-  opt <- nlminb(par_to_eta(par0), neg_loglik_eta(model), neg_score_eta(model),
-    control = list(rel.tol = rel.tol, eval.max = 5000, iter.max = 5000)
-  )
-  par <- setNames(eta_to_par(opt$par), par_names)
-  attr(par, "iter") <- unname(opt$evaluations[1])
-  par
-}

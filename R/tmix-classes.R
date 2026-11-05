@@ -7,6 +7,7 @@
 #   "tmix"              parent class: shared methods (grad_Q, fit, print)
 #     "tmix_density"    simple implementation on the density scale with dt()
 #     "tmix_log"        log scale: log-densities written out, plogis(), log-sum-exp
+#     "tmix_cpp"        the log-scale formulas as C++ loops
 
 # Constructors -------------------------------------------------------------------
 
@@ -125,3 +126,17 @@ Q.tmix_log <- function(model, par, gam) {
   lc <- log_comp(model, par)
   sum(gam * lc$a + (1 - gam) * lc$b)
 }
+
+# C++: "tmix_cpp" -------------------------------------------------------------------
+
+# The same log-scale formulas as "tmix_log", but each building block is one C++
+# loop over the data (src/tmix.cpp, loaded in R/load.R). The GEM code is unchanged.
+tmix_cpp <- function(x, nu) {
+  log_const <- lgamma((nu + 1) / 2) - lgamma(nu / 2) - 0.5 * log(pi * nu)
+  new_tmix(x, nu, "tmix_cpp", log_const = log_const)
+}
+
+loglik.tmix_cpp <- function(model, par) loglik_cpp(model$x, par, model$nu, model$log_const)
+e_step.tmix_cpp <- function(model, par) e_step_cpp(model$x, par, model$nu, model$log_const)
+Q.tmix_cpp <- function(model, par, gam) Q_cpp(model$x, par, gam, model$nu, model$log_const)
+grad_Q.tmix_cpp <- function(model, par, gam) grad_Q_cpp(model$x, par, gam, model$nu)
